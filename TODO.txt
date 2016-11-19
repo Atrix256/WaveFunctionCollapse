@@ -1,0 +1,32 @@
+
+
+===== NOW =====
+* collect patterns
+* rotate / reflect them, as parameters dictate
+* support params: periodicInput, symmetry, N, ground
+* do rest of constructor work
+
+* do the rest of the stuff from the C# version! (overlapped version first)
+* show timings
+* make it command line based?
+ * is there anything we can thread? even doing fork/join work to get tiles or anything?
+
+===== LATER =====
+* blog post about overlapped version
+* do simple tiled model
+* think about other ways to do things
+ * maybe JFA and get it running on GPU?
+ * try it with realistic images like you'd see in games?
+ * for realistic images there are way more colors, and it isn't as hard a rule about which colors can go together. Can we use that as an advantage?
+
+
+
+
+
+
+
+===== DONE =====
+--11/19/16
+* started on this today. 6:30
+* got image loading working
+* converted image to palletized image
