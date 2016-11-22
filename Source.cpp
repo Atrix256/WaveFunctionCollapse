@@ -4,9 +4,11 @@
 #include <vector>
 #include <algorithm>
 #include <stdint.h>
+#include <unordered_set>
 
 typedef uint8_t uint8;
 typedef uint32_t uint32;
+typedef uint64_t uint64;
 
 struct SPixel
 {
@@ -37,6 +39,7 @@ struct SPalletizedImageData
 
 	size_t m_width;
 	size_t m_height;
+	size_t m_bpp; // bits per pixel. Based on number of items in pallete
 	std::vector<size_t> m_pixels;
 	std::vector<SPixel> m_pallete;
 };
@@ -163,11 +166,66 @@ void PalletizeImage (const SImageData& colorImage, SPalletizedImageData& palleti
 	// process a row of data
 	for (size_t y = 0; y < colorImage.m_height; ++y)
 		PalletizeImageRow(colorImage, palletizedImage, y);
+
+	// calculate bits per pixel
+	size_t maxValue = 2;
+	palletizedImage.m_bpp = 1;
+	while (maxValue < palletizedImage.m_pallete.size())
+	{
+		maxValue *= 2;
+		++palletizedImage.m_bpp;
+	}
+}
+
+uint64 GetPattern (const SPalletizedImageData& palletizedImage, size_t startX, size_t startY, size_t tileSize)
+{
+	uint64 pattern = 0;
+
+	// TODO: verify that the pattern gathering code is correct
+
+	for (size_t iy = 0; iy < tileSize; ++iy)
+	{
+		size_t y = (startY + iy) % palletizedImage.m_height;
+
+		for (size_t ix = 0; ix < tileSize; ++ix)
+		{
+			size_t x = (startX + ix) % palletizedImage.m_width;
+
+			pattern = pattern << palletizedImage.m_bpp;
+			pattern |= palletizedImage.m_pixels[(y*palletizedImage.m_width + x) * 3];
+		}
+	}
+
+	return pattern;
+}
+
+void GatherUniquePatterns (const SPalletizedImageData& palletizedImage, bool periodicInput, size_t tileSize)
+{
+	size_t maxX = palletizedImage.m_width - (periodicInput ? tileSize : 0);
+	size_t maxY = palletizedImage.m_height - (periodicInput ? tileSize : 0);
+
+	std::unordered_set<uint64> patterns;
+
+	for (size_t y = 0; y < maxY; ++y)
+	{
+		for (size_t x = 0; x < maxX; ++x)
+		{
+			uint64 pattern = GetPattern(palletizedImage, x, y, tileSize);
+			patterns.insert(pattern);
+		}
+	}
+
+	// TODO: gather the unique patterns
+	// TODO: rotations and reflections (symmetry parameter?)
 }
 
 int main (int argc, char **argv)
 {
+	// Parameters
+	const size_t c_tileSize = 3;
 	const char* c_fileName = "Samples\\Knot.bmp";
+	bool periodicInput = true;
+	bool periodicOutput = true;
 
 	// Load image
 	SImageData colorImage;
@@ -180,5 +238,21 @@ int main (int argc, char **argv)
 	SPalletizedImageData palletizedImage;
 	PalletizeImage(colorImage, palletizedImage);
 
+	// Gather the patterns
+	GatherUniquePatterns(palletizedImage, periodicInput, c_tileSize);
+
 	return 0;
 }
+
+/*
+
+TODO:
+
+* make this OOP?
+* make parameters come from command line
+* test! Maybe do all the tests from that XML file
+* profile and optimize?
+ * maybe keep this one clean for blog post and make another one that runs faster?
+ * could also save that for a future impl when doing more realistic images
+
+*/
