@@ -17,20 +17,41 @@ typedef uint64_t uint64;
 enum class EPattern : uint64 {};
 
 enum class EObserveResult {
-	e_observeSuccess,
-	e_observeFailure,
-	e_observeNotDone
+	e_success,
+	e_failure,
+	e_notDone
+};
+
+enum class EGetPixelEntropyResult
+{
+    e_OK,
+    e_noPossibilities
 };
 
 // The key is the pattern converted to a uint64.
 // The value is how many times that pattern appeared.
-typedef std::unordered_map<EPattern, uint64> TPatternList;
+// TODO: i don't think we are calculating weight correctly.  If we rotate a pattern that has a weight of 8, and find it exists, we only add 1 to the found pattern, not 8!
+typedef std::unordered_map<EPattern, uint64>        TPatternList;
+
+typedef std::vector<struct SSuperpositionalPixel>   TSuperpositionalPixels;
 
 struct SPixel
 {
 	uint8 B;
 	uint8 G;
 	uint8 R;
+};
+
+struct SSuperpositionalPixel
+{
+    SSuperpositionalPixel()
+        : m_changed(false)
+    { }
+
+    std::vector<bool>   m_possiblePatterns;
+    // TODO: should we have a changed list instead, so we don't need to search all pixels to find the ones that changed?
+    // TODO: could have an open and closed list or similar as well
+    bool                m_changed;
 };
 
 struct SImageData
@@ -58,6 +79,32 @@ struct SPalletizedImageData
 	size_t m_bpp;
 	std::vector<size_t> m_pixels;
 	std::vector<SPixel> m_pallete;
+};
+
+struct SPRNG
+{
+    SPRNG (uint32 seed = -1)
+    {
+        static std::random_device rd;
+        m_rng.seed(seed == -1 ? rd() : seed);
+    }
+
+    template <typename T>
+    T RandomInt (T min = std::numeric_limits<T>::min(), T max = std::numeric_limits<T>::max())
+    {
+        static std::uniform_int<T> dist(min, max);
+        return dist(m_rng);
+    }
+
+    template <typename T>
+    T RandomDistribution (const std::discrete_distribution<T>& distribution)
+    {
+        return distribution(m_rng);
+    }
+
+private:
+    uint32          m_seed;
+    std::mt19937    m_rng;
 };
 
 bool operator == (const SPixel& a, const SPixel& b)
@@ -341,32 +388,163 @@ void SavePatterns (const TPatternList& patterns, const char* srcFileName, size_t
     }
 }
 
-template <typename T>
-static T RandomInt(uint32 prngSeed, T min = std::numeric_limits<T>::min(), T max = std::numeric_limits<T>::max())
+void SaveFinalImage (const char* srcFileName, size_t width, size_t height, const TSuperpositionalPixels& superPositionalPixels)
 {
-	static std::random_device rd;
-	static std::mt19937 mt(prngSeed == -1 ? rd() : prngSeed);
-	static std::uniform_int<T> dist(min, max);
-	return dist(mt);
+    SImageData tempImageData;
+    tempImageData.m_width = width;
+    tempImageData.m_height = height;
+    tempImageData.m_pitch = width * 3;
+    if (tempImageData.m_pitch & 3)
+    {
+        tempImageData.m_pitch &= ~3;
+        tempImageData.m_pitch += 4;
+    }
+    tempImageData.m_pixels.resize(tempImageData.m_pitch*tempImageData.m_height);
+
+    const SSuperpositionalPixel* srcPixel = &superPositionalPixels[0];
+    for (size_t y = 0; y < height; ++y)
+    {
+        SPixel* destPixel = (SPixel*)&tempImageData.m_pixels[y*tempImageData.m_pitch];
+        for (size_t x = 0; x < width; ++x, ++destPixel, ++srcPixel)
+        {
+            // TODO: decode pattern choices into a final image
+            int ijkl = 0;
+        }
+    }
+
+    char fileName[256];
+    strcpy(fileName, srcFileName);
+    strcat(fileName, ".out.bmp");
+
+    SaveImage(fileName, tempImageData);
 }
 
-EObserveResult Observe (size_t width, size_t height, std::vector<bool>& possiblePatterns)
+template <typename LAMBDA>
+void ForEachPattern (const TPatternList& patterns, const LAMBDA& lambda)
+{
+    size_t patternIndex = 0;
+    for (const std::pair<EPattern, uint64>& pair : patterns)
+    {
+        lambda(patternIndex, pair.first, pair.second);
+        ++patternIndex;
+    }
+
+}
+
+EGetPixelEntropyResult GetPixelEntropy (const std::vector<bool>& possiblePatterns, const TPatternList& patterns, float& entropy)
+{
+    // count how many patterns are possible for this pixel, and get a sum of the weights of those patterns
+    uint64 possiblePatternCount = 0;
+    uint64 possiblePatternWeight = 0;
+
+    ForEachPattern(
+        patterns,
+        [&] (size_t patternIndex, EPattern pattern, uint64 patternWeight) {
+            if (possiblePatterns[patternIndex])
+            {
+                ++possiblePatternCount;
+                possiblePatternWeight += patternWeight;
+            }
+        }
+    );
+
+    // if there's no possibility of anything at all, this is an impossible pixel and we've failed.
+    if (possiblePatternWeight == 0)
+    {
+        entropy = 0.0f;
+        return EGetPixelEntropyResult::e_noPossibilities;
+    }
+
+    // if there's only one possibility, this pixel is decided, and there is no entropy.
+    if (possiblePatternCount == 1)
+    {
+        entropy = 0.0f;
+        return EGetPixelEntropyResult::e_OK;
+    }
+
+    // calculate entropy
+    float logSum = std::log(float(possiblePatternWeight));
+    float mainSum = 0.0f;
+    ForEachPattern(
+        patterns,
+        [&] (size_t patternIndex, EPattern pattern, uint64 patternWeight) {
+            if (possiblePatterns[patternIndex])
+                mainSum += float(patternWeight) * (float)std::log(patternWeight);
+        }
+    );
+    entropy = logSum - mainSum / possiblePatternWeight;
+    return EGetPixelEntropyResult::e_OK;
+
+    // TODO: should we add a small amount of noise? I'm leaning towards yes since the original did it, but dunno.
+}
+
+void ObservePixel (const TPatternList& patterns, SPRNG& prng, SSuperpositionalPixel& pixel)
+{
+    // choose a pattern randomly, taking weights into account.
+    static std::vector<uint64> distribution;
+    size_t numPatterns = patterns.size();
+    distribution.resize(numPatterns);
+    ForEachPattern(
+        patterns,
+        [&] (size_t patternIndex, EPattern pattern, uint64 patternWeight) {
+            distribution[patternIndex] = patternWeight;
+        }
+    );
+    std::discrete_distribution<uint64> dist(distribution.begin(), distribution.end());
+    uint64 observedPatternIndex = prng.RandomDistribution(dist);
+
+    // observe that pattern
+    ForEachPattern(
+        patterns,
+        [&] (size_t patternIndex, EPattern pattern, uint64 patternWeight) {
+            if (patternIndex != observedPatternIndex)
+                pixel.m_possiblePatterns[patternIndex] = false;
+        }
+    );
+
+    // remember that this pixel has been modified
+    pixel.m_changed = true;
+}
+
+EObserveResult Observe (size_t width, size_t height, TSuperpositionalPixels& superpositionalPixels, const TPatternList& patterns, SPRNG& prng, size_t& undecidedPixels)
 {
 	// Find the pixel with the smallest entropy (uncertainty)
-	int minEntropyPixelX = -1;
-	int minEntropyPixelY = -1;
+	size_t minEntropyPixelX = -1;
+    size_t minEntropyPixelY = -1;
 	float minEntropy = std::numeric_limits<float>::max();
 
+    // TODO: move this to it's own function? FindMinimumEntropyPixel()?
+    undecidedPixels = 0;
+    SSuperpositionalPixel* pixel = &superpositionalPixels[0];
 	for (size_t y = 0; y < height; ++y)
 	{
-		for (size_t x = 0; x < width; ++x)
+		for (size_t x = 0; x < width; ++x, ++pixel)
 		{
+            float pixelEntropy = 0.0f;
+            if (GetPixelEntropy(pixel->m_possiblePatterns, patterns, pixelEntropy) == EGetPixelEntropyResult::e_noPossibilities)
+                return EObserveResult::e_failure;
 
+            if (pixelEntropy == 0)
+                continue;
+
+            ++undecidedPixels;
+
+            if (pixelEntropy < minEntropy)
+            {
+                minEntropy = pixelEntropy;
+                minEntropyPixelX = x;
+                minEntropyPixelY = y;
+            }
 		}
 	}
 
-	// TODO: this
-	return EObserveResult::e_observeNotDone;
+    // if all pixels are decided (no entropy left in the image), return success
+    if (minEntropyPixelX == -1 && minEntropyPixelY == -1)
+        return EObserveResult::e_success;
+
+    // otherwise, select a possibility for this pixel and return that we still have work to do
+    ObservePixel(patterns, prng, superpositionalPixels[minEntropyPixelY*width+minEntropyPixelX]);
+	return EObserveResult::e_notDone;
 }
 
 bool Propagate()
@@ -392,6 +570,9 @@ int main(int argc, char **argv)
     size_t outputImageHeight = 48;
 	uint32 prngSeed = -1;
 
+    // initialize random number generator
+    SPRNG prng(prngSeed);
+
     // Load image
     SImageData colorImage;
     if (!LoadImage(c_fileName, colorImage)) {
@@ -414,31 +595,46 @@ int main(int argc, char **argv)
     //SavePatterns(patterns, c_fileName, c_tileSize, palletizedImage.m_bpp, palletizedImage.m_pallete);
 
 	// Initialize stuff for waves
-	std::vector<bool> possiblePatterns;
-	possiblePatterns.resize(outputImageWidth*outputImageHeight*patterns.size(), true);
-	std::vector<bool> pixelChanges;
-	pixelChanges.resize(outputImageWidth*outputImageHeight, false);
-
-	//int i = RandomInt<int>(prngSeed);
+    TSuperpositionalPixels superpositionalPixels;
+    superpositionalPixels.resize(outputImageWidth*outputImageHeight);
+    for (SSuperpositionalPixel& pixel : superpositionalPixels)
+    {
+        pixel.m_changed = false;
+        pixel.m_possiblePatterns.resize(patterns.size(), true);
+    }
 
 	// Do wave collapse
-	EObserveResult observeResult = EObserveResult::e_observeNotDone;
+	EObserveResult observeResult = EObserveResult::e_notDone;
+    uint32 lastPercent = 0;
+    printf("Progress: 0%%");
 	while (1)
 	{
-		observeResult = Observe();
-		if (observeResult != EObserveResult::e_observeNotDone)
+        size_t undecidedPixels;
+		observeResult = Observe(outputImageWidth, outputImageHeight, superpositionalPixels, patterns, prng, undecidedPixels);
+		if (observeResult != EObserveResult::e_notDone)
 			break;
+
+        uint32 percent = 100 - uint32(100.0f * float(undecidedPixels) / (float(outputImageWidth)*float(outputImageHeight)));
+        
+        if (lastPercent != percent)
+        {
+            printf("\rProgress: %i%%", percent);
+            lastPercent = percent;
+        }
+
 		PropagateAllChanges();
 	}
 
-	// TODO: make and save final image
-
+    // Save the final image
+    SaveFinalImage(c_fileName, outputImageWidth, outputImageHeight, superpositionalPixels);
 	return 0;
 }
 
 /*
 
 TODO:
+
+* print out timing and progress
 
 ? should we set a limit on how many iterations it can do?
 
@@ -467,8 +663,20 @@ TODO:
 
 * error handling: like when N is too large, or too many colors to fit into uint64. maybe leave it alone and keep the code simple?
 
+* print out seed value, so it can be re-run it needed
+
+* make some structs with helper functions instead of just having std::set and std::vector of stuff. easier to read / less error prone.
+
+? maybe we don't need to calculate entropy in log space.  If all we need is the minimum value, the unlogged values seem like they should work too.
+ * could research, and also test with some seeds to see if it changes anything!
 
 * Notes:
  * The original code added noise to the entropy calculations to randomize it a bit.  The author said it made the animations more pleasing but wasn't sure if it made a difference to runtime.
+ * could optimize, multithread, OOP.  Trying to focus on making a single cpp file that plainly describes things.
+
+* Next:
+ * simple tiled model
+ * make some fast CPU version? multithreaded, focused on speed etc.
+ * JFA?
 
 */
