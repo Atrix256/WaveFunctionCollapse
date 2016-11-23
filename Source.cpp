@@ -4,11 +4,18 @@
 #include <vector>
 #include <algorithm>
 #include <stdint.h>
-#include <unordered_set>
+#include <unordered_map>
+#include <array>
 
 typedef uint8_t uint8;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
+
+enum class EPattern : uint64 {};
+
+// The key is the pattern converted to a uint64.
+// The value is how many times that pattern appeared.
+typedef std::unordered_map<EPattern, uint64> TPatternList;
 
 struct SPixel
 {
@@ -133,7 +140,7 @@ bool SaveImage (const char *fileName, const SImageData &image)
 
 size_t GetOrMakePalleteIndex (SPalletizedImageData& palletizedImage, const SPixel& pixel)
 {
-	// see if this pixel value alread exists in the pallete
+	// see if this pixel value already exists in the pallete
 	auto it = std::find(palletizedImage.m_pallete.begin(), palletizedImage.m_pallete.end(), pixel);
 
 	// if it was found, return it's index
@@ -177,11 +184,10 @@ void PalletizeImage (const SImageData& colorImage, SPalletizedImageData& palleti
 	}
 }
 
-uint64 GetPattern (const SPalletizedImageData& palletizedImage, size_t startX, size_t startY, size_t tileSize)
+EPattern GetPattern (const SPalletizedImageData& palletizedImage, size_t startX, size_t startY, size_t tileSize)
 {
+    // convert a <tileSize> x <tileSize> pattern into a uint64 and return it
 	uint64 pattern = 0;
-
-	// TODO: verify that the pattern gathering code is correct
 
 	for (size_t iy = 0; iy < tileSize; ++iy)
 	{
@@ -192,54 +198,171 @@ uint64 GetPattern (const SPalletizedImageData& palletizedImage, size_t startX, s
 			size_t x = (startX + ix) % palletizedImage.m_width;
 
 			pattern = pattern << palletizedImage.m_bpp;
-			pattern |= palletizedImage.m_pixels[(y*palletizedImage.m_width + x) * 3];
+			pattern |= palletizedImage.m_pixels[y*palletizedImage.m_width + x];
 		}
 	}
 
-	return pattern;
+	return (EPattern)pattern;
 }
 
-void GatherUniquePatterns (const SPalletizedImageData& palletizedImage, bool periodicInput, size_t tileSize)
+void GetPatterns (const SPalletizedImageData& palletizedImage, TPatternList& patterns, bool periodicInput, size_t tileSize)
 {
 	size_t maxX = palletizedImage.m_width - (periodicInput ? tileSize : 0);
 	size_t maxY = palletizedImage.m_height - (periodicInput ? tileSize : 0);
-
-	std::unordered_set<uint64> patterns;
-
 	for (size_t y = 0; y < maxY; ++y)
 	{
 		for (size_t x = 0; x < maxX; ++x)
 		{
-			uint64 pattern = GetPattern(palletizedImage, x, y, tileSize);
-			patterns.insert(pattern);
+			EPattern pattern = GetPattern(palletizedImage, x, y, tileSize);
+
+            auto it = patterns.find(pattern);
+            if (it != patterns.end())
+                (*it).second++;
+            else
+                patterns.insert(std::make_pair(pattern, 1));
 		}
 	}
-
-	// TODO: gather the unique patterns
-	// TODO: rotations and reflections (symmetry parameter?)
 }
 
-int main (int argc, char **argv)
+EPattern ReflectPatternXAxis (EPattern pattern, size_t tileSize, size_t bpp)
 {
-	// Parameters
-	const size_t c_tileSize = 3;
-	const char* c_fileName = "Samples\\Knot.bmp";
-	bool periodicInput = true;
-	bool periodicOutput = true;
+    uint64 ret = 0;
+    for (size_t destY = 0; destY < tileSize; ++destY)
+    {
+        for (size_t destX = 0; destX < tileSize; ++destX)
+        {
+            size_t srcX = tileSize - 1 - destX;
+            size_t srcY = destY;
 
-	// Load image
-	SImageData colorImage;
-	if (!LoadImage(c_fileName, colorImage)) {
-		fprintf(stderr, "Could not load image: %s\n", c_fileName);
-		return 1;
-	}
+            size_t srcPixelIndex = srcY * tileSize + srcX;
 
-	// Palletize the image for simpler processing of pixels
-	SPalletizedImageData palletizedImage;
-	PalletizeImage(colorImage, palletizedImage);
+            uint64 srcMask = (1 << (bpp-1)) << srcPixelIndex;
+            uint64 value = ((uint64)pattern & srcMask) >> srcPixelIndex;
 
-	// Gather the patterns
-	GatherUniquePatterns(palletizedImage, periodicInput, c_tileSize);
+            ret = ret << bpp;
+            ret |= value;
+        }
+    }
+    return (EPattern)ret;
+}
+
+EPattern RotatePatternCW90 (EPattern pattern, size_t tileSize, size_t bpp)
+{
+    uint64 ret = 0;
+    for (size_t destY = 0; destY < tileSize; ++destY)
+    {
+        for (size_t destX = 0; destX < tileSize; ++destX)
+        {
+            size_t srcX = destY;
+            size_t srcY = tileSize - 1 - destX;
+
+            size_t srcPixelIndex = srcY * tileSize + srcX;
+
+            uint64 srcMask = (1 << (bpp - 1)) << srcPixelIndex;
+            uint64 value = ((uint64)pattern & srcMask) >> srcPixelIndex;
+
+            ret = ret << bpp;
+            ret |= value;
+        }
+    }
+    return (EPattern)ret;
+}
+
+void RotateReflectPatterns (TPatternList& patterns, size_t symmetry, size_t tileSize, size_t bpp)
+{
+    TPatternList origPatterns = patterns;
+    for (std::pair<EPattern,uint64> it : origPatterns)
+    {
+        std::array<EPattern, 8> rotatedReflectedPatterns;
+        rotatedReflectedPatterns[0] = it.first;
+        rotatedReflectedPatterns[1] = ReflectPatternXAxis(rotatedReflectedPatterns[0], tileSize, bpp);
+        rotatedReflectedPatterns[2] = RotatePatternCW90(rotatedReflectedPatterns[0], tileSize, bpp);
+        rotatedReflectedPatterns[3] = ReflectPatternXAxis(rotatedReflectedPatterns[2], tileSize, bpp);
+        rotatedReflectedPatterns[4] = RotatePatternCW90(rotatedReflectedPatterns[2], tileSize, bpp);
+        rotatedReflectedPatterns[5] = ReflectPatternXAxis(rotatedReflectedPatterns[4], tileSize, bpp);
+        rotatedReflectedPatterns[6] = RotatePatternCW90(rotatedReflectedPatterns[4], tileSize, bpp);
+        rotatedReflectedPatterns[7] = ReflectPatternXAxis(rotatedReflectedPatterns[6], tileSize, bpp);
+
+        for (size_t i = 1; i < symmetry; ++i)
+        {
+            auto it = patterns.find(rotatedReflectedPatterns[i]);
+            if (it != patterns.end())
+                (*it).second++;
+            else
+                patterns.insert(std::make_pair(rotatedReflectedPatterns[i], 1));
+        }
+    }
+}
+
+void SavePatterns (const TPatternList& patterns, const char* srcFileName, size_t tileSize, size_t bpp, const std::vector<SPixel>& pallete)
+{
+    SImageData tempImageData;
+    tempImageData.m_width = tileSize;
+    tempImageData.m_height = tileSize;
+    tempImageData.m_pitch = tileSize * 3;
+    if (tempImageData.m_pitch & 3)
+    {
+        tempImageData.m_pitch &= ~3;
+        tempImageData.m_pitch += 4;
+    }
+    tempImageData.m_pixels.resize(tempImageData.m_pitch*tempImageData.m_height);
+    for (std::pair<EPattern, uint64> it : patterns)
+    {
+        for (size_t y = 0; y < tileSize; ++y)
+        {
+            for (size_t x = 0; x < tileSize; ++x)
+            {
+                size_t pixelIndex = y * tileSize + x;
+
+                uint64 mask = (1 << (bpp - 1)) << pixelIndex;
+                uint64 palleteIndex = ((uint64)it.first & mask) >> pixelIndex;
+
+                *(SPixel*)&tempImageData.m_pixels[y * tempImageData.m_pitch + x * 3] = pallete[palleteIndex];
+            }
+        }
+
+        char buffer[256];
+        sprintf(buffer, ".Pattern%I64i.%I64i.bmp", it.first, it.second);
+
+        char fileName[256];
+        strcpy(fileName, srcFileName);
+        strcat(fileName, buffer);
+
+        SaveImage(fileName, tempImageData);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    // Parameters
+    const size_t c_tileSize = 3;
+    const char* c_fileName = "Samples\\Knot.bmp";
+    bool periodicInput = true;
+    bool periodicOutput = true;
+    size_t symmetry = 8;
+    size_t outputImageWidth = 48;
+    size_t outputImageHeight = 48;
+
+    // Load image
+    SImageData colorImage;
+    if (!LoadImage(c_fileName, colorImage)) {
+        fprintf(stderr, "Could not load image: %s\n", c_fileName);
+        return 1;
+    }
+
+    // Palletize the image for simpler processing of pixels
+    SPalletizedImageData palletizedImage;
+    PalletizeImage(colorImage, palletizedImage);
+
+    // Gather the patterns from the source data
+    TPatternList patterns;
+    GetPatterns(palletizedImage, patterns, periodicInput, c_tileSize);
+
+    // Make rotations and reflections of those patterns (as controlled by symmetry parameter) to make our output image more diverse
+    RotateReflectPatterns(patterns, symmetry, c_tileSize, palletizedImage.m_bpp);
+
+    // Uncomment this to save the patterns it found
+    //SavePatterns(patterns, c_fileName, c_tileSize, palletizedImage.m_bpp, palletizedImage.m_pallete);
 
 	return 0;
 }
@@ -248,11 +371,22 @@ int main (int argc, char **argv)
 
 TODO:
 
-* make this OOP?
-* make parameters come from command line
+! I really have no idea what the propagator array does.  It's 4d! [2*N-1][][][]
+
+* make parameters come from command line?
+ * could also just hard code it.  Maybe a macro list describing all the experiments?
+
+* make params go into a special structure passed by const ref?
+
+* support ground feature where there are specific pixels that are initialized and can't be changed.
+
 * test! Maybe do all the tests from that XML file
+
 * profile and optimize?
  * maybe keep this one clean for blog post and make another one that runs faster?
  * could also save that for a future impl when doing more realistic images
+
+* use enum classes to help with type safety. palette index type etc.
+! anywhere you have a comment, see if you need to organize it better
 
 */
