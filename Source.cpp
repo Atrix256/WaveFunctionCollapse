@@ -1,17 +1,26 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>  // for bitmap headers.  Sorry non windows people!
+#undef min
+#undef max
 
 #include <vector>
 #include <algorithm>
 #include <stdint.h>
 #include <unordered_map>
 #include <array>
+#include <random>
 
 typedef uint8_t uint8;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
 
 enum class EPattern : uint64 {};
+
+enum class EObserveResult {
+	e_observeSuccess,
+	e_observeFailure,
+	e_observeNotDone
+};
 
 // The key is the pattern converted to a uint64.
 // The value is how many times that pattern appeared.
@@ -46,7 +55,7 @@ struct SPalletizedImageData
 
 	size_t m_width;
 	size_t m_height;
-	size_t m_bpp; // bits per pixel. Based on number of items in pallete
+	size_t m_bpp;
 	std::vector<size_t> m_pixels;
 	std::vector<SPixel> m_pallete;
 };
@@ -332,6 +341,45 @@ void SavePatterns (const TPatternList& patterns, const char* srcFileName, size_t
     }
 }
 
+template <typename T>
+static T RandomInt(uint32 prngSeed, T min = std::numeric_limits<T>::min(), T max = std::numeric_limits<T>::max())
+{
+	static std::random_device rd;
+	static std::mt19937 mt(prngSeed == -1 ? rd() : prngSeed);
+	static std::uniform_int<T> dist(min, max);
+	return dist(mt);
+}
+
+EObserveResult Observe (size_t width, size_t height, std::vector<bool>& possiblePatterns)
+{
+	// Find the pixel with the smallest entropy (uncertainty)
+	int minEntropyPixelX = -1;
+	int minEntropyPixelY = -1;
+	float minEntropy = std::numeric_limits<float>::max();
+
+	for (size_t y = 0; y < height; ++y)
+	{
+		for (size_t x = 0; x < width; ++x)
+		{
+
+		}
+	}
+
+	// TODO: this
+	return EObserveResult::e_observeNotDone;
+}
+
+bool Propagate()
+{
+	// TODO: this
+	return false;
+}
+
+void PropagateAllChanges()
+{
+	while (Propagate());
+}
+
 int main(int argc, char **argv)
 {
     // Parameters
@@ -342,6 +390,7 @@ int main(int argc, char **argv)
     size_t symmetry = 8;
     size_t outputImageWidth = 48;
     size_t outputImageHeight = 48;
+	uint32 prngSeed = -1;
 
     // Load image
     SImageData colorImage;
@@ -364,6 +413,26 @@ int main(int argc, char **argv)
     // Uncomment this to save the patterns it found
     //SavePatterns(patterns, c_fileName, c_tileSize, palletizedImage.m_bpp, palletizedImage.m_pallete);
 
+	// Initialize stuff for waves
+	std::vector<bool> possiblePatterns;
+	possiblePatterns.resize(outputImageWidth*outputImageHeight*patterns.size(), true);
+	std::vector<bool> pixelChanges;
+	pixelChanges.resize(outputImageWidth*outputImageHeight, false);
+
+	//int i = RandomInt<int>(prngSeed);
+
+	// Do wave collapse
+	EObserveResult observeResult = EObserveResult::e_observeNotDone;
+	while (1)
+	{
+		observeResult = Observe();
+		if (observeResult != EObserveResult::e_observeNotDone)
+			break;
+		PropagateAllChanges();
+	}
+
+	// TODO: make and save final image
+
 	return 0;
 }
 
@@ -371,7 +440,11 @@ int main(int argc, char **argv)
 
 TODO:
 
-! I really have no idea what the propagator array does.  It's 4d! [2*N-1][][][]
+? should we set a limit on how many iterations it can do?
+
+* could make this oop - or should this stay as a single source file if possible?
+
+! I really have no idea what the propagator array does.  It's 4d! [2*N-1][2*N-1][T][]
 
 * make parameters come from command line?
  * could also just hard code it.  Maybe a macro list describing all the experiments?
@@ -388,5 +461,14 @@ TODO:
 
 * use enum classes to help with type safety. palette index type etc.
 ! anywhere you have a comment, see if you need to organize it better
+
+* clean up code when it's working
+* build w32 and x64 to make sure no warnings / errors
+
+* error handling: like when N is too large, or too many colors to fit into uint64. maybe leave it alone and keep the code simple?
+
+
+* Notes:
+ * The original code added noise to the entropy calculations to randomize it a bit.  The author said it made the animations more pleasing but wasn't sure if it made a difference to runtime.
 
 */
