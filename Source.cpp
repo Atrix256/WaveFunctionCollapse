@@ -6,13 +6,41 @@
 #include <vector>
 #include <algorithm>
 #include <stdint.h>
-#include <unordered_map>
-#include <array>
 #include <random>
 
 typedef uint8_t uint8;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                                      MISC
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+struct SPRNG
+{
+    SPRNG (uint32 seed = -1)
+    {
+        static std::random_device rd;
+        m_rng.seed(seed == -1 ? rd() : seed);
+    }
+
+    template <typename T>
+    T RandomInt (T min = std::numeric_limits<T>::min(), T max = std::numeric_limits<T>::max())
+    {
+        static std::uniform_int<T> dist(min, max);
+        return dist(m_rng);
+    }
+
+    template <typename T>
+    T RandomDistribution (const std::discrete_distribution<T>& distribution)
+    {
+        return distribution(m_rng);
+    }
+
+private:
+    uint32          m_seed;
+    std::mt19937    m_rng;
+};
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                                BMP LOADING AND SAVING
@@ -365,32 +393,6 @@ enum class EObserveResult {
 	e_notDone
 };
 
-struct SPRNG
-{
-    SPRNG (uint32 seed = -1)
-    {
-        static std::random_device rd;
-        m_rng.seed(seed == -1 ? rd() : seed);
-    }
-
-    template <typename T>
-    T RandomInt (T min = std::numeric_limits<T>::min(), T max = std::numeric_limits<T>::max())
-    {
-        static std::uniform_int<T> dist(min, max);
-        return dist(m_rng);
-    }
-
-    template <typename T>
-    T RandomDistribution (const std::discrete_distribution<T>& distribution)
-    {
-        return distribution(m_rng);
-    }
-
-private:
-    uint32          m_seed;
-    std::mt19937    m_rng;
-};
-
 uint64 CountPixelPossibilities (TSuperpositionalPixels& superPositionalPixels, size_t pixelBoolIndex, const TPatternList& patterns, size_t tileSize)
 {
 	// Count how many possibilities there are
@@ -486,27 +488,45 @@ EObserveResult Observe (size_t width, size_t height, TObservedColors& observedCo
 	return EObserveResult::e_notDone;	
 }
 
-bool Propagate (size_t width, size_t height, std::vector<bool>& changedPixels)
+bool Propagate (size_t width, size_t height, size_t tileSize, const TPatternList& patterns, std::vector<bool>& changedPixels)
 {
 	// find a changed pixel.  If none found, return false. Else, mark the pixel as unchanged since we will handle it.
-	auto it = std::find(changedPixels.begin(), changedPixels.end(), true);
-	if (it == changedPixels.end())
+	size_t i = 0;
+	size_t c = changedPixels.size();
+	while (i < c && !changedPixels[i])
+		++i;
+	if (i >= c)
 		return false;
-	(*it) = false;
+	changedPixels[i] = false;
 
 	// TODO: handle this changed pixel.
 	// * This pixel now has a definite color.
 	// * For all pixels possibly affected by this change...
-	//  * Mark as false any pattern possibilities which don't have this color for this pixel
+	//  * Mark as false any pattern possibilities which don't have this color for this pixel?
+	//  * It may actually be more complex than that.  The original impl makes it so the patterns have to match. Not sure if really required?!
+	//  * Actually yeah... this pixel may not have a definite color, but it does have at least one pattern which is not allowed. So, need to work in patterns, not pixel colors.
+
+	// Process all pixels that could be affected by a change to this pixel
+	size_t changedPixelX = i % width;
+	size_t changedPixelY = i / width;
+	for (int indexY = -tileSize + 1, stopY = tileSize; indexY < stopY; ++indexY)
+	{
+		for (int indexX = -tileSize + 1, stopX = tileSize; indexX < stopX; ++indexX)
+		{
+			size_t testPixelX = (changedPixelX + indexX + width) % width;
+			size_t testPixelY = (changedPixelY + indexY + height) % height;
+			int ijkl = 0;
+		}
+	}
 
 	// return that we did do some work
 	return true;
 }
 
-void PropagateAllChanges (size_t width, size_t height, std::vector<bool>& changedPixels)
+void PropagateAllChanges (size_t width, size_t height, size_t tileSize, const TPatternList& patterns, std::vector<bool>& changedPixels)
 {
 	// Propagate until no progress can be made
-	while (Propagate(width, height, changedPixels));
+	while (Propagate(width, height, tileSize, patterns, changedPixels));
 }
 
 void SaveFinalImage(const char* srcFileName, size_t width, size_t height, const TObservedColors& observedColors, const SPalletizedImageData& palletizedImage)
@@ -605,7 +625,7 @@ int main(int argc, char **argv)
             lastPercent = percent;
         }
 
-		PropagateAllChanges(outputImageWidth, outputImageHeight, changedPixels);
+		PropagateAllChanges(outputImageWidth, outputImageHeight, c_tileSize, patterns, changedPixels);
 	}
 
     // Save the final image
@@ -635,6 +655,8 @@ TODO:
  * could also just hard code it.  Maybe a macro list describing all the experiments?
 
 * make params go into a special structure passed by const ref?
+
+* make sure periodic input and periodic output params are honored
 
 * support ground feature where there are specific pixels that are initialized and can't be changed.
 
@@ -672,6 +694,7 @@ TODO:
   * this code is meant only to show you how it works, so is slow.
   * TODO: mention the O() complexity.  It's gotta be like n^8 or something :P
  * Note that the original added a little bit of noise to entropy, and that it made animations better, but unknown if it helped anything
+ * My impl and orig have NxN tiles, but could also do NxM tiles if you wanted to.
 
 * Next:
  * simple tiled model
