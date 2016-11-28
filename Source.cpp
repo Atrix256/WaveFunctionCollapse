@@ -465,18 +465,17 @@ EObserveResult Observe (size_t width, size_t height, TObservedColors& observedCo
 			if (!superPositionalPixels[boolIndex + patternPositionOffset])
 				continue;
 
-			// if this is NOT the selected pattern
+			// if this is NOT the selected pattern, mark it as not possible
 			if (selectedPossibility == (uint64)-1 || selectedPossibility > currentPatternCount)
 			{
 				superPositionalPixels[boolIndex + patternPositionOffset] = false;
 				selectedPossibility -= currentPatternCount;
 			}
-			// else it IS the selected pattern
+			// else it IS the selected pattern, leave it as possible, and set the observed color
 			else
 			{
 				selectedPossibility = (uint64)-1;
 				observedColors[pixelIndex] = patterns[patternIndex].m_pattern[positionIndex];
-				int ijkl = 0;
 			}
 		}
 	}
@@ -488,7 +487,78 @@ EObserveResult Observe (size_t width, size_t height, TObservedColors& observedCo
 	return EObserveResult::e_notDone;	
 }
 
-bool Propagate (size_t width, size_t height, size_t tileSize, const TPatternList& patterns, std::vector<bool>& changedPixels)
+void PropagatePatternRestrictions (size_t changedPixelX, size_t changedPixelY, size_t affectedPixelX, size_t affectedPixelY, const TPatternList& patterns, TSuperpositionalPixels& superPositionalPixels, size_t boolsPerPixel, size_t imageWidth, size_t imageHeight, size_t tileSize, int patternOffsetX, int patternOffsetY)
+{
+    // TODO: remove this comment after things are working
+    // 1) loop through all patterns that are possible in the affectedPixel...
+    // 2) loop through all patterns that are possible in the changedPixel...
+    // 3) Mark as impossible any pattern in affectedPixel that don't match a possible pattern in changedPixel, taking pixel position offsets into account!
+
+    
+    // If any possible pattern in the affectedPixel doesn't match a possible pattern in changedPixel, mark it as impossible.
+    // Note that we need to take into account the offset between the pixels, and only care about locations that are inside both patterns.
+    size_t changedPixelIndex = changedPixelY * imageWidth + changedPixelX;
+    size_t affectedPixelIndex = affectedPixelY * imageWidth + affectedPixelX;
+
+    size_t changedPixelBoolIndex = changedPixelIndex * boolsPerPixel;
+    size_t affectedPixelBoolIndex = affectedPixelIndex * boolsPerPixel;
+
+    const size_t positionCount = tileSize * tileSize;
+
+    // Loop through the affectedPixel possible patterns to see if any are made impossible by the changed pixel's constraints
+    for (size_t affectedPixelOffset = 0; affectedPixelOffset < boolsPerPixel; ++affectedPixelOffset)
+    {
+        if (!superPositionalPixels[affectedPixelBoolIndex + affectedPixelOffset])
+            continue;
+
+        size_t affectedPatternIndex = affectedPixelOffset / positionCount;
+        size_t affectedPatternOffsetPixelIndex = affectedPixelOffset % positionCount;
+
+        size_t affectedPatternOffsetPixelX = affectedPatternOffsetPixelIndex % tileSize;
+        size_t affectedPatternOffsetPixelY = affectedPatternOffsetPixelIndex / tileSize;
+
+        const SPattern& currentAffectedPixelPattern = patterns[affectedPatternIndex];
+
+        // Loop through the changedPixel possible patterns to see if any match the offset affectedPixel patterns
+        bool patternOK = false;
+        for (size_t changedPixelOffset = 0; changedPixelOffset < boolsPerPixel && !patternOK; ++changedPixelOffset)
+        {
+            if (!superPositionalPixels[changedPixelBoolIndex + changedPixelOffset])
+                continue;
+
+            size_t changedPatternIndex = changedPixelOffset / positionCount;
+            size_t changedPatternOffsetPixelIndex = changedPixelOffset % positionCount;
+
+            size_t changedPatternOffsetPixelX = changedPatternOffsetPixelIndex % tileSize;
+            size_t changedPatternOffsetPixelY = changedPatternOffsetPixelIndex / tileSize;
+
+            const SPattern& currentChangedPixelPattern = patterns[changedPatternIndex];
+
+            // calculate how much to offset the currentChangedPixelPattern to line it up with the currentAffectedPixelPattern
+            int offsetX = patternOffsetX - (int)affectedPatternOffsetPixelX + (int)changedPatternOffsetPixelX;
+            int offsetY = patternOffsetY - (int)affectedPatternOffsetPixelY + (int)changedPatternOffsetPixelY;
+
+            int ijkl = 0;
+
+            // TODO: is the offset calculated correctly?
+            // TODO: patternOK = patternOK || PatternMatches(affectedPixelPattern, changedPixelPattern, patternOffsetX, patternOffsetY) 
+        }
+
+        // if the pattern is ok, nothing else to do!
+        if (patternOK)
+            continue;
+
+        // otherwise, disable this pattern and remember that we've changed this affectedPixel
+        superPositionalPixels[affectedPixelBoolIndex + affectedPixelOffset] = patternOK;
+        // TODO: mark affectedPixel as changed!
+    }   
+
+    // TODO: should the above pattern of single for loop be used for other places that interact with superPositionalPixels?
+
+    int ijkl = 0;
+}
+
+bool Propagate (size_t width, size_t height, size_t tileSize, const TPatternList& patterns, std::vector<bool>& changedPixels, TSuperpositionalPixels& superPositionalPixels, size_t boolsPerPixel, size_t imageWidth, size_t imageHeight)
 {
 	// find a changed pixel.  If none found, return false. Else, mark the pixel as unchanged since we will handle it.
 	size_t i = 0;
@@ -509,13 +579,13 @@ bool Propagate (size_t width, size_t height, size_t tileSize, const TPatternList
 	// Process all pixels that could be affected by a change to this pixel
 	size_t changedPixelX = i % width;
 	size_t changedPixelY = i / width;
-	for (int indexY = -tileSize + 1, stopY = tileSize; indexY < stopY; ++indexY)
+	for (int indexY = -(int)tileSize + 1, stopY = (int)tileSize; indexY < stopY; ++indexY)
 	{
-		for (int indexX = -tileSize + 1, stopX = tileSize; indexX < stopX; ++indexX)
+		for (int indexX = -(int)tileSize + 1, stopX = (int)tileSize; indexX < stopX; ++indexX)
 		{
-			size_t testPixelX = (changedPixelX + indexX + width) % width;
-			size_t testPixelY = (changedPixelY + indexY + height) % height;
-			int ijkl = 0;
+			size_t affectedPixelX = (changedPixelX + indexX + width) % width;
+			size_t affectedPixelY = (changedPixelY + indexY + height) % height;
+            PropagatePatternRestrictions(changedPixelX, changedPixelY, affectedPixelX, affectedPixelY, patterns, superPositionalPixels, boolsPerPixel, imageWidth, imageHeight, tileSize, indexX, indexY);
 		}
 	}
 
@@ -523,10 +593,10 @@ bool Propagate (size_t width, size_t height, size_t tileSize, const TPatternList
 	return true;
 }
 
-void PropagateAllChanges (size_t width, size_t height, size_t tileSize, const TPatternList& patterns, std::vector<bool>& changedPixels)
+void PropagateAllChanges (size_t width, size_t height, size_t tileSize, const TPatternList& patterns, std::vector<bool>& changedPixels, TSuperpositionalPixels& superPositionalPixels, size_t boolsPerPixel, size_t imageWidth, size_t imageHeight)
 {
 	// Propagate until no progress can be made
-	while (Propagate(width, height, tileSize, patterns, changedPixels));
+	while (Propagate(width, height, tileSize, patterns, changedPixels, superPositionalPixels, boolsPerPixel, imageWidth, imageHeight));
 }
 
 void SaveFinalImage(const char* srcFileName, size_t width, size_t height, const TObservedColors& observedColors, const SPalletizedImageData& palletizedImage)
@@ -625,7 +695,7 @@ int main(int argc, char **argv)
             lastPercent = percent;
         }
 
-		PropagateAllChanges(outputImageWidth, outputImageHeight, c_tileSize, patterns, changedPixels);
+		PropagateAllChanges(outputImageWidth, outputImageHeight, c_tileSize, patterns, changedPixels, superPositionalPixels, boolsPerPixel, outputImageWidth, outputImageHeight);
 	}
 
     // Save the final image
@@ -640,6 +710,7 @@ TODO:
 * profile and see where the slow downs are, in case any easy fixes that don't complicate things.
 
 * there are too many params passed around.  Make a class!
+ * instead of making it all oop, maybe just have a context struct that has all the state in it.
 
 * clean out unused stuff, after the new implementation is working
 
@@ -683,6 +754,8 @@ TODO:
 ? maybe we don't need to calculate entropy in log space.  If all we need is the minimum value, the unlogged values seem like they should work too.
  * could research, and also test with some seeds to see if it changes anything!
 
+? what should we do (image save out?) when it fails to find a solution? ie an impossibility is hit.
+
 * Notes:
  * The original code added noise to the entropy calculations to randomize it a bit.  The author said it made the animations more pleasing but wasn't sure if it made a difference to runtime.
  * could optimize, multithread, OOP.  Trying to focus on making a single cpp file that plainly describes things.
@@ -695,6 +768,10 @@ TODO:
   * TODO: mention the O() complexity.  It's gotta be like n^8 or something :P
  * Note that the original added a little bit of noise to entropy, and that it made animations better, but unknown if it helped anything
  * My impl and orig have NxN tiles, but could also do NxM tiles if you wanted to.
+ * Could weight tiles differently if you wanted.
+ * Can use for interactive procedural content, or procedural generation with constraints.
+   * human can pre-limit some possibilities, or put in some hard decisions, then let the algorithm run and fill in the details that aren't cared about.
+   * could regenerate several different things from the same constraints.  To re-roll something if you don't like it.  Or, to make variety without changing things that you actually care about.
 
 * Next:
  * simple tiled model
