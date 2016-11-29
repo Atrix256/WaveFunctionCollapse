@@ -1,4 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
+#define _HAS_ITERATOR_DEBUGGING 0 // stl is slow in debug!
+
 #include <windows.h>  // for bitmap headers.  Sorry non windows people!
 #undef min
 #undef max
@@ -42,10 +44,6 @@ private:
     std::mt19937    m_rng;
 };
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                                BMP LOADING AND SAVING
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 struct SPixel
 {
 	uint8 B;
@@ -58,9 +56,28 @@ bool operator == (const SPixel& a, const SPixel& b)
 	return a.B == b.B && a.G == b.G && a.R == b.R;
 }
 
+enum class EPalletIndex : uint64 { e_undecided = (uint64)-1 };
+
+typedef std::vector<bool>			TSuperpositionalPixels;
+typedef std::vector<EPalletIndex>	TObservedColors;
+
+struct SPalletizedImageData
+{
+	SPalletizedImageData()
+		: m_width(0)
+		, m_height(0)
+	{ }
+
+	size_t m_width;
+	size_t m_height;
+	size_t m_bpp;
+	std::vector<EPalletIndex> m_pixels;
+	std::vector<SPixel> m_pallete;
+};
+
 struct SImageData
 {
-	SImageData ()
+	SImageData()
 		: m_width(0)
 		, m_height(0)
 	{ }
@@ -70,6 +87,49 @@ struct SImageData
 	size_t m_pitch;
 	std::vector<uint8> m_pixels;
 };
+
+typedef std::vector<EPalletIndex> TPattern;
+
+struct SPattern
+{
+	TPattern	m_pattern;
+	uint64		m_count;
+};
+
+typedef std::vector<SPattern> TPatternList;
+
+struct SContext
+{
+	SContext(uint32 prngSeed = -1)
+		: m_prng(prngSeed)
+	{ }
+	SPRNG		m_prng;
+
+	SImageData				m_colorImage;
+	SPalletizedImageData	m_palletizedImage;
+
+	TPatternList			m_patterns;
+
+	std::vector<bool>		m_changedPixels;
+
+	TSuperpositionalPixels	m_superPositionalPixels;
+
+	TObservedColors			m_observedColors;
+
+	size_t		m_tileSize;
+	const char* m_fileName;
+	bool		m_periodicInput;
+	bool		m_periodicOutput;
+	uint8		m_symmetry;
+	size_t		m_outputImageWidth;
+	size_t		m_outputImageHeight;
+	size_t		m_numPixels;
+	size_t		m_boolsPerPixel;
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                                BMP LOADING AND SAVING
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 bool LoadImage (const char *fileName, SImageData& imageData)
 {
@@ -157,22 +217,6 @@ bool SaveImage (const char *fileName, const SImageData &image)
 //                                                IMAGE PALLETIZATION
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-enum class EPalletIndex : uint64 { e_undecided = (uint64)-1 };
-
-struct SPalletizedImageData
-{
-	SPalletizedImageData()
-		: m_width(0)
-		, m_height(0)
-	{ }
-
-	size_t m_width;
-	size_t m_height;
-	size_t m_bpp;
-	std::vector<EPalletIndex> m_pixels;
-	std::vector<SPixel> m_pallete;
-};
-
 EPalletIndex GetOrMakePalleteIndex (SPalletizedImageData& palletizedImage, const SPixel& pixel)
 {
 	// see if this pixel value already exists in the pallete
@@ -222,16 +266,6 @@ void PalletizeImage (const SImageData& colorImage, SPalletizedImageData& palleti
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                                PATTERN GATHERING
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-typedef std::vector<EPalletIndex> TPattern;
-
-struct SPattern
-{
-	TPattern	m_pattern;
-	uint64		m_count;
-};
-
-typedef std::vector<SPattern> TPatternList;
 
 void GetPattern (const SPalletizedImageData& palletizedImage, size_t startX, size_t startY, size_t tileSize, TPattern& outPattern)
 {
@@ -306,35 +340,35 @@ void RotatePatternCW90 (const TPattern& inPattern, TPattern& outPattern, size_t 
     }
 }
 
-void GetPatterns (const SPalletizedImageData& palletizedImage, TPatternList& patterns, bool periodicInput, size_t tileSize, size_t symmetry)
+void GetPatterns (SContext& context)
 {
 	TPattern srcPattern;
 	TPattern tmpPattern;
-	srcPattern.resize(tileSize*tileSize);
-	tmpPattern.resize(tileSize*tileSize);
+	srcPattern.resize(context.m_tileSize*context.m_tileSize);
+	tmpPattern.resize(context.m_tileSize*context.m_tileSize);
 
-	size_t maxX = palletizedImage.m_width - (periodicInput ? tileSize : 0);
-	size_t maxY = palletizedImage.m_height - (periodicInput ? tileSize : 0);
+	size_t maxX = context.m_palletizedImage.m_width - (context.m_periodicInput ? context.m_tileSize : 0);
+	size_t maxY = context.m_palletizedImage.m_height - (context.m_periodicInput ? context.m_tileSize : 0);
 	for (size_t y = 0; y < maxY; ++y)
 	{
 		for (size_t x = 0; x < maxX; ++x)
 		{
 			// get and add the pattern
-			GetPattern(palletizedImage, x, y, tileSize, srcPattern);
-			AddPattern(patterns, srcPattern);
+			GetPattern(context.m_palletizedImage, x, y, context.m_tileSize, srcPattern);
+			AddPattern(context.m_patterns, srcPattern);
 
 			// add rotations and reflections, as instructed by symmetry parameter
-			for (size_t i = 1; i < symmetry; ++i)
+			for (uint8 i = 1; i < context.m_symmetry; ++i)
 			{
 				if (i % 2 == 1)
 				{
-					ReflectPatternXAxis(srcPattern, tmpPattern, tileSize);
-					AddPattern(patterns, srcPattern);
+					ReflectPatternXAxis(srcPattern, tmpPattern, context.m_tileSize);
+					AddPattern(context.m_patterns, srcPattern);
 				}
 				else
 				{
-					RotatePatternCW90(srcPattern, tmpPattern, tileSize);
-					AddPattern(patterns, srcPattern);
+					RotatePatternCW90(srcPattern, tmpPattern, context.m_tileSize);
+					AddPattern(context.m_patterns, srcPattern);
 					srcPattern = tmpPattern;
 				}
 			}
@@ -342,12 +376,13 @@ void GetPatterns (const SPalletizedImageData& palletizedImage, TPatternList& pat
 	}
 }
 
-void SavePatterns (const TPatternList& patterns, const char* srcFileName, size_t tileSize, size_t bpp, const std::vector<SPixel>& pallete)
+void SavePatterns (SContext& context)
 {
+	// TODO: make a function on SImageData to construct one by width / height only, and use that here and anywhere else needed.
     SImageData tempImageData;
-    tempImageData.m_width = tileSize;
-    tempImageData.m_height = tileSize;
-    tempImageData.m_pitch = tileSize * 3;
+    tempImageData.m_width = context.m_tileSize;
+    tempImageData.m_height = context.m_tileSize;
+    tempImageData.m_pitch = context.m_tileSize * 3;
     if (tempImageData.m_pitch & 3)
     {
         tempImageData.m_pitch &= ~3;
@@ -355,14 +390,14 @@ void SavePatterns (const TPatternList& patterns, const char* srcFileName, size_t
     }
     tempImageData.m_pixels.resize(tempImageData.m_pitch*tempImageData.m_height);
 	uint64 patternIndex = 0;
-	for (const SPattern& pattern : patterns)
+	for (const SPattern& pattern : context.m_patterns)
     {
 		const EPalletIndex* srcPixel = &pattern.m_pattern[0];
-        for (size_t y = 0; y < tileSize; ++y)
+        for (size_t y = 0; y < context.m_tileSize; ++y)
         {
-            for (size_t x = 0; x < tileSize; ++x)
+            for (size_t x = 0; x < context.m_tileSize; ++x)
             {
-                *(SPixel*)&tempImageData.m_pixels[y * tempImageData.m_pitch + x * 3] = pallete[(size_t)*srcPixel];
+                *(SPixel*)&tempImageData.m_pixels[y * tempImageData.m_pitch + x * 3] = context.m_palletizedImage.m_pallete[(size_t)*srcPixel];
 				++srcPixel;
             }
         }
@@ -371,7 +406,7 @@ void SavePatterns (const TPatternList& patterns, const char* srcFileName, size_t
         sprintf(buffer, ".Pattern%I64i.%I64i.bmp", patternIndex, pattern.m_count);
 
         char fileName[256];
-        strcpy(fileName, srcFileName);
+        strcpy(fileName, context.m_fileName);
         strcat(fileName, buffer);
 
         SaveImage(fileName, tempImageData);
@@ -384,53 +419,50 @@ void SavePatterns (const TPatternList& patterns, const char* srcFileName, size_t
 //                                                UNORGANIZED
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-typedef std::vector<bool>			TSuperpositionalPixels;
-typedef std::vector<EPalletIndex>	TObservedColors;
-
 enum class EObserveResult {
 	e_success,
 	e_failure,
 	e_notDone
 };
 
-uint64 CountPixelPossibilities (TSuperpositionalPixels& superPositionalPixels, size_t pixelBoolIndex, const TPatternList& patterns, size_t tileSize)
+uint64 CountPixelPossibilities (SContext& context, size_t pixelBoolIndex)
 {
 	// Count how many possibilities there are
 	uint64 possiblePatternCount = 0;
-	const size_t tileSizeSq = tileSize * tileSize;
+	const size_t tileSizeSq = context.m_tileSize * context.m_tileSize;
 	size_t patternPositionOffset = 0;
-	for (size_t patternIndex = 0, patternCount = patterns.size(); patternIndex < patternCount; ++patternIndex)
+	for (size_t patternIndex = 0, patternCount = context.m_patterns.size(); patternIndex < patternCount; ++patternIndex)
 	{
 		for (size_t positionIndex = 0, positionCount = tileSizeSq; positionIndex < positionCount; ++positionIndex, ++patternPositionOffset)
 		{
-			if (!superPositionalPixels[pixelBoolIndex + patternPositionOffset])
+			if (!context.m_superPositionalPixels[pixelBoolIndex + patternPositionOffset])
 				continue;
 
-			possiblePatternCount += patterns[patternIndex].m_count;
+			possiblePatternCount += context.m_patterns[patternIndex].m_count;
 		}
 	}
 
 	return possiblePatternCount;
 }
 
-EObserveResult Observe (size_t width, size_t height, TObservedColors& observedColors, std::vector<bool>& changedPixels, TSuperpositionalPixels& superPositionalPixels, const TPatternList& patterns, size_t boolsPerPixel, size_t tileSize, size_t& undecidedPixels, SPRNG& prng)
+EObserveResult Observe (SContext& context, size_t& undecidedPixels)
 {
 	// Find the pixel with the smallest entropy (uncertainty), by finding the pixel with the smallest number of possibilities, which isn't yet observed/decided
 	size_t minPixelX = -1;
     size_t minPixelY = -1;
 	uint64 minPossibilities = (uint64)-1;
 	size_t pixelIndex = 0;
-	for (size_t y = 0; y < height; ++y)
+	for (size_t y = 0; y < context.m_outputImageHeight; ++y)
 	{
-		for (size_t x = 0; x < width; ++x, ++pixelIndex)
+		for (size_t x = 0; x < context.m_outputImageWidth; ++x, ++pixelIndex)
 		{
 			// skip pixels which are already decided
-			if (observedColors[pixelIndex] != EPalletIndex::e_undecided)
+			if (context.m_observedColors[pixelIndex] != EPalletIndex::e_undecided)
 				continue;
 			++undecidedPixels;
 
-			size_t boolIndex = pixelIndex * boolsPerPixel;
-			uint64 possibilities = CountPixelPossibilities(superPositionalPixels, boolIndex, patterns, tileSize);
+			size_t boolIndex = pixelIndex * context.m_boolsPerPixel;
+			uint64 possibilities = CountPixelPossibilities(context, boolIndex);
 
 			// if no possibilities, this is an impossible pixel
 			if (possibilities == 0)
@@ -452,96 +484,126 @@ EObserveResult Observe (size_t width, size_t height, TObservedColors& observedCo
 
 	// otherwise, select a possibility for this pixel
 	// TODO: make this a function.  ObservePixel()
-	uint64 selectedPossibility = prng.RandomInt<uint64>(0, minPossibilities);
+	uint64 selectedPossibility = context.m_prng.RandomInt<uint64>(0, minPossibilities);
 	size_t patternPositionOffset = 0;
-	const size_t tileSizeSq = tileSize * tileSize;
-	pixelIndex = minPixelY * width + minPixelX;
-	size_t boolIndex = pixelIndex * boolsPerPixel;
-	for (size_t patternIndex = 0, patternCount = patterns.size(); patternIndex < patternCount; ++patternIndex)
+	const size_t tileSizeSq = context.m_tileSize * context.m_tileSize;
+	pixelIndex = minPixelY * context.m_outputImageWidth + minPixelX;
+	size_t boolIndex = pixelIndex * context.m_boolsPerPixel;
+	for (size_t patternIndex = 0, patternCount = context.m_patterns.size(); patternIndex < patternCount; ++patternIndex)
 	{
-		const size_t currentPatternCount = patterns[patternIndex].m_count;
+		const size_t currentPatternCount = context.m_patterns[patternIndex].m_count;
 		for (size_t positionIndex = 0, positionCount = tileSizeSq; positionIndex < positionCount; ++positionIndex, ++patternPositionOffset)
 		{
-			if (!superPositionalPixels[boolIndex + patternPositionOffset])
+			if (!context.m_superPositionalPixels[boolIndex + patternPositionOffset])
 				continue;
 
 			// if this is NOT the selected pattern, mark it as not possible
 			if (selectedPossibility == (uint64)-1 || selectedPossibility > currentPatternCount)
 			{
-				superPositionalPixels[boolIndex + patternPositionOffset] = false;
+				context.m_superPositionalPixels[boolIndex + patternPositionOffset] = false;
 				selectedPossibility -= currentPatternCount;
 			}
 			// else it IS the selected pattern, leave it as possible, and set the observed color
 			else
 			{
 				selectedPossibility = (uint64)-1;
-				observedColors[pixelIndex] = patterns[patternIndex].m_pattern[positionIndex];
+				context.m_observedColors[pixelIndex] = context.m_patterns[patternIndex].m_pattern[positionIndex];
 			}
 		}
 	}
 
 	// mark this pixel as changed so that Propogate() knows to propagate it's changes
-	changedPixels[pixelIndex] = true;
+	context.m_changedPixels[pixelIndex] = true;
 
 	// return that we still have more work to do
 	return EObserveResult::e_notDone;	
 }
 
-void PropagatePatternRestrictions (size_t changedPixelX, size_t changedPixelY, size_t affectedPixelX, size_t affectedPixelY, const TPatternList& patterns, TSuperpositionalPixels& superPositionalPixels, size_t boolsPerPixel, size_t imageWidth, size_t imageHeight, size_t tileSize, int patternOffsetX, int patternOffsetY)
+bool PatternMatches (const TPattern& patternA, const TPattern& patternB, int patternBOffsetX, int patternBOffsetY, size_t tileSize)
 {
-    // TODO: remove this comment after things are working
-    // 1) loop through all patterns that are possible in the affectedPixel...
-    // 2) loop through all patterns that are possible in the changedPixel...
-    // 3) Mark as impossible any pattern in affectedPixel that don't match a possible pattern in changedPixel, taking pixel position offsets into account!
+	int patternAOffsetX = 0;
+	int patternAOffsetY = 0;
 
-    
+	if (patternBOffsetX < 0)
+	{
+		patternAOffsetX = -patternBOffsetX;
+		patternBOffsetX = 0;
+	}
+
+	if (patternBOffsetY < 0)
+	{
+		patternAOffsetY = -patternBOffsetY;
+		patternBOffsetY = 0;
+	}
+
+	for (int y = 0; y < tileSize; ++y)
+	{
+		int pay = y + patternAOffsetY;
+		int pby = y + patternBOffsetY;
+		if (pay >= tileSize || pby >= tileSize)
+			continue;
+
+		for (int x = 0; x < tileSize; ++x)
+		{
+			int pax = x + patternAOffsetX;
+			int pbx = x + patternBOffsetX;
+			if (pax >= tileSize || pbx >= tileSize)
+				continue;
+
+			if (patternA[pay*tileSize + pax] != patternB[pby*tileSize + pbx])
+				return false;
+		}
+	}
+	return true;
+}
+
+void PropagatePatternRestrictions (SContext& context, size_t changedPixelX, size_t changedPixelY, size_t affectedPixelX, size_t affectedPixelY, int patternOffsetX, int patternOffsetY)
+{
     // If any possible pattern in the affectedPixel doesn't match a possible pattern in changedPixel, mark it as impossible.
     // Note that we need to take into account the offset between the pixels, and only care about locations that are inside both patterns.
-    size_t changedPixelIndex = changedPixelY * imageWidth + changedPixelX;
-    size_t affectedPixelIndex = affectedPixelY * imageWidth + affectedPixelX;
+    size_t changedPixelIndex = changedPixelY * context.m_outputImageWidth + changedPixelX;
+    size_t affectedPixelIndex = affectedPixelY * context.m_outputImageWidth + affectedPixelX;
 
-    size_t changedPixelBoolIndex = changedPixelIndex * boolsPerPixel;
-    size_t affectedPixelBoolIndex = affectedPixelIndex * boolsPerPixel;
+    size_t changedPixelBoolIndex = changedPixelIndex * context.m_boolsPerPixel;
+    size_t affectedPixelBoolIndex = affectedPixelIndex * context.m_boolsPerPixel;
 
-    const size_t positionCount = tileSize * tileSize;
+    const size_t positionCount = context.m_tileSize * context.m_tileSize;
 
     // Loop through the affectedPixel possible patterns to see if any are made impossible by the changed pixel's constraints
-    for (size_t affectedPixelOffset = 0; affectedPixelOffset < boolsPerPixel; ++affectedPixelOffset)
+    for (size_t affectedPixelOffset = 0; affectedPixelOffset < context.m_boolsPerPixel; ++affectedPixelOffset)
     {
-        if (!superPositionalPixels[affectedPixelBoolIndex + affectedPixelOffset])
+        if (!context.m_superPositionalPixels[affectedPixelBoolIndex + affectedPixelOffset])
             continue;
 
         size_t affectedPatternIndex = affectedPixelOffset / positionCount;
         size_t affectedPatternOffsetPixelIndex = affectedPixelOffset % positionCount;
 
-        size_t affectedPatternOffsetPixelX = affectedPatternOffsetPixelIndex % tileSize;
-        size_t affectedPatternOffsetPixelY = affectedPatternOffsetPixelIndex / tileSize;
+        size_t affectedPatternOffsetPixelX = affectedPatternOffsetPixelIndex % context.m_tileSize;
+        size_t affectedPatternOffsetPixelY = affectedPatternOffsetPixelIndex / context.m_tileSize;
 
-        const SPattern& currentAffectedPixelPattern = patterns[affectedPatternIndex];
+        const TPattern& currentAffectedPixelPattern = context.m_patterns[affectedPatternIndex].m_pattern;
 
         // Loop through the changedPixel possible patterns to see if any match the offset affectedPixel patterns
         bool patternOK = false;
-        for (size_t changedPixelOffset = 0; changedPixelOffset < boolsPerPixel && !patternOK; ++changedPixelOffset)
+        for (size_t changedPixelOffset = 0; changedPixelOffset < context.m_boolsPerPixel && !patternOK; ++changedPixelOffset)
         {
-            if (!superPositionalPixels[changedPixelBoolIndex + changedPixelOffset])
+            if (!context.m_superPositionalPixels[changedPixelBoolIndex + changedPixelOffset])
                 continue;
 
             size_t changedPatternIndex = changedPixelOffset / positionCount;
             size_t changedPatternOffsetPixelIndex = changedPixelOffset % positionCount;
 
-            size_t changedPatternOffsetPixelX = changedPatternOffsetPixelIndex % tileSize;
-            size_t changedPatternOffsetPixelY = changedPatternOffsetPixelIndex / tileSize;
+            size_t changedPatternOffsetPixelX = changedPatternOffsetPixelIndex % context.m_tileSize;
+            size_t changedPatternOffsetPixelY = changedPatternOffsetPixelIndex / context.m_tileSize;
 
-            const SPattern& currentChangedPixelPattern = patterns[changedPatternIndex];
+            const TPattern& currentChangedPixelPattern = context.m_patterns[changedPatternIndex].m_pattern;
 
             // calculate how much to offset the currentChangedPixelPattern to line it up with the currentAffectedPixelPattern
             int offsetX = patternOffsetX - (int)affectedPatternOffsetPixelX + (int)changedPatternOffsetPixelX;
             int offsetY = patternOffsetY - (int)affectedPatternOffsetPixelY + (int)changedPatternOffsetPixelY;
 
-            int ijkl = 0;
-
-            // TODO: is the offset calculated correctly?
-            // TODO: patternOK = patternOK || PatternMatches(affectedPixelPattern, changedPixelPattern, patternOffsetX, patternOffsetY) 
+			// if we find a matching pattern, we can bail out
+			patternOK = PatternMatches(currentAffectedPixelPattern, currentChangedPixelPattern, offsetX, offsetY, context.m_tileSize);
         }
 
         // if the pattern is ok, nothing else to do!
@@ -549,43 +611,31 @@ void PropagatePatternRestrictions (size_t changedPixelX, size_t changedPixelY, s
             continue;
 
         // otherwise, disable this pattern and remember that we've changed this affectedPixel
-        superPositionalPixels[affectedPixelBoolIndex + affectedPixelOffset] = patternOK;
-        // TODO: mark affectedPixel as changed!
-    }   
-
-    // TODO: should the above pattern of single for loop be used for other places that interact with superPositionalPixels?
-
-    int ijkl = 0;
+		context.m_superPositionalPixels[affectedPixelBoolIndex + affectedPixelOffset] = patternOK;
+		context.m_changedPixels[affectedPixelIndex] = true;
+    }
 }
 
-bool Propagate (size_t width, size_t height, size_t tileSize, const TPatternList& patterns, std::vector<bool>& changedPixels, TSuperpositionalPixels& superPositionalPixels, size_t boolsPerPixel, size_t imageWidth, size_t imageHeight)
+bool Propagate (SContext& context)
 {
 	// find a changed pixel.  If none found, return false. Else, mark the pixel as unchanged since we will handle it.
 	size_t i = 0;
-	size_t c = changedPixels.size();
-	while (i < c && !changedPixels[i])
+	while (i < context.m_numPixels && !context.m_changedPixels[i])
 		++i;
-	if (i >= c)
+	if (i >= context.m_numPixels)
 		return false;
-	changedPixels[i] = false;
-
-	// TODO: handle this changed pixel.
-	// * This pixel now has a definite color.
-	// * For all pixels possibly affected by this change...
-	//  * Mark as false any pattern possibilities which don't have this color for this pixel?
-	//  * It may actually be more complex than that.  The original impl makes it so the patterns have to match. Not sure if really required?!
-	//  * Actually yeah... this pixel may not have a definite color, but it does have at least one pattern which is not allowed. So, need to work in patterns, not pixel colors.
+	context.m_changedPixels[i] = false;
 
 	// Process all pixels that could be affected by a change to this pixel
-	size_t changedPixelX = i % width;
-	size_t changedPixelY = i / width;
-	for (int indexY = -(int)tileSize + 1, stopY = (int)tileSize; indexY < stopY; ++indexY)
+	size_t changedPixelX = i % context.m_outputImageWidth;
+	size_t changedPixelY = i / context.m_outputImageWidth;
+	for (int indexY = -(int)context.m_tileSize + 1, stopY = (int)context.m_tileSize; indexY < stopY; ++indexY)
 	{
-		for (int indexX = -(int)tileSize + 1, stopX = (int)tileSize; indexX < stopX; ++indexX)
+		for (int indexX = -(int)context.m_tileSize + 1, stopX = (int)context.m_tileSize; indexX < stopX; ++indexX)
 		{
-			size_t affectedPixelX = (changedPixelX + indexX + width) % width;
-			size_t affectedPixelY = (changedPixelY + indexY + height) % height;
-            PropagatePatternRestrictions(changedPixelX, changedPixelY, affectedPixelX, affectedPixelY, patterns, superPositionalPixels, boolsPerPixel, imageWidth, imageHeight, tileSize, indexX, indexY);
+			size_t affectedPixelX = (changedPixelX + indexX + context.m_outputImageWidth) % context.m_outputImageWidth;
+			size_t affectedPixelY = (changedPixelY + indexY + context.m_outputImageHeight) % context.m_outputImageHeight;
+            PropagatePatternRestrictions(context, changedPixelX, changedPixelY, affectedPixelX, affectedPixelY, indexX, indexY);
 		}
 	}
 
@@ -593,19 +643,19 @@ bool Propagate (size_t width, size_t height, size_t tileSize, const TPatternList
 	return true;
 }
 
-void PropagateAllChanges (size_t width, size_t height, size_t tileSize, const TPatternList& patterns, std::vector<bool>& changedPixels, TSuperpositionalPixels& superPositionalPixels, size_t boolsPerPixel, size_t imageWidth, size_t imageHeight)
+void PropagateAllChanges (SContext& context)
 {
 	// Propagate until no progress can be made
-	while (Propagate(width, height, tileSize, patterns, changedPixels, superPositionalPixels, boolsPerPixel, imageWidth, imageHeight));
+	while (Propagate(context));
 }
 
-void SaveFinalImage(const char* srcFileName, size_t width, size_t height, const TObservedColors& observedColors, const SPalletizedImageData& palletizedImage)
+void SaveFinalImage (SContext& context)
 {
 	// allocate space for the image
 	SImageData tempImageData;
-	tempImageData.m_width = width;
-	tempImageData.m_height = height;
-	tempImageData.m_pitch = width * 3;
+	tempImageData.m_width = context.m_outputImageWidth;
+	tempImageData.m_height = context.m_outputImageHeight;
+	tempImageData.m_pitch = context.m_outputImageWidth * 3;
 	if (tempImageData.m_pitch & 3)
 	{
 		tempImageData.m_pitch &= ~3;
@@ -614,19 +664,20 @@ void SaveFinalImage(const char* srcFileName, size_t width, size_t height, const 
 	tempImageData.m_pixels.resize(tempImageData.m_pitch*tempImageData.m_height);
 
 	// set the output image pixels , based on the observed colors
-	const EPalletIndex* srcPixel = &observedColors[0];
-	for (size_t y = 0; y < height; ++y)
+	const EPalletIndex* srcPixel = &context.m_observedColors[0];
+	for (size_t y = 0; y < context.m_outputImageHeight; ++y)
 	{
 		SPixel* destPixel = (SPixel*)&tempImageData.m_pixels[y*tempImageData.m_pitch];
-		for (size_t x = 0; x < width; ++x, ++destPixel, ++srcPixel)
+		for (size_t x = 0; x < context.m_outputImageWidth; ++x, ++destPixel, ++srcPixel)
 		{
-			*destPixel = palletizedImage.m_pallete[(size_t)*srcPixel];
+			// TODO: handle the srcPixel being undecided.
+			*destPixel = context.m_palletizedImage.m_pallete[(size_t)*srcPixel];
 		}
 	}
 
 	// write the file
 	char fileName[256];
-	strcpy(fileName, srcFileName);
+	strcpy(fileName, context.m_fileName);
 	strcat(fileName, ".out.bmp");
 	SaveImage(fileName, tempImageData);
 }
@@ -634,47 +685,45 @@ void SaveFinalImage(const char* srcFileName, size_t width, size_t height, const 
 
 int main(int argc, char **argv)
 {
-    // Parameters
-    const size_t c_tileSize = 3;
-    const char* c_fileName = "Samples\\Knot.bmp";
-    bool periodicInput = true;
-    bool periodicOutput = true;
-    size_t symmetry = 8;
-	size_t outputImageWidth = 48;
-	size_t outputImageHeight = 48;
-	uint32 prngSeed = -1;
+	// TODO: could move all this calculation stuff into a "run" function that takes the params as function params?
 
-    // initialize random number generator
-    SPRNG prng(prngSeed);
+	// Parameters
+	SContext context;
+	context.m_tileSize = 3;
+	context.m_fileName = "Samples\\Knot.bmp";;
+	context.m_periodicInput = true;
+	context.m_periodicOutput = true;
+	context.m_symmetry = 8;
+	context.m_outputImageWidth = 64;
+	context.m_outputImageHeight = 64;
+	context.m_numPixels = context.m_outputImageWidth * context.m_outputImageHeight;
 
     // Load image
-    SImageData colorImage;
-    if (!LoadImage(c_fileName, colorImage)) {
-        fprintf(stderr, "Could not load image: %s\n", c_fileName);
+    if (!LoadImage(context.m_fileName, context.m_colorImage)) {
+        fprintf(stderr, "Could not load image: %s\n", context.m_fileName);
         return 1;
     }
 
     // Palletize the image for simpler processing of pixels
-    SPalletizedImageData palletizedImage;
-    PalletizeImage(colorImage, palletizedImage);
+    PalletizeImage(context.m_colorImage, context.m_palletizedImage);
 
     // Gather the patterns from the source data
-    TPatternList patterns;
-    GetPatterns(palletizedImage, patterns, periodicInput, c_tileSize, symmetry);
+    GetPatterns(context);
+
+	context.m_boolsPerPixel = context.m_patterns.size() * context.m_tileSize * context.m_tileSize;
 
 	// initialize our superpositional pixel information which describes which patterns in what positions each pixel has as a possibility
-	size_t numPixels = outputImageWidth * outputImageHeight;
-	size_t boolsPerPixel = patterns.size() * c_tileSize * c_tileSize;
-	TSuperpositionalPixels superPositionalPixels;
-	superPositionalPixels.resize(numPixels*boolsPerPixel, true);
+	// TODO: make this stuff happen in the context constructor
+	context.m_superPositionalPixels.resize(context.m_numPixels*context.m_boolsPerPixel, true);
 
 	// initialize our observed colors for each pixel, which starts out as undecided
-	TObservedColors observedColors;
-	observedColors.resize(numPixels, EPalletIndex::e_undecided);
+	context.m_observedColors.resize(context.m_numPixels, EPalletIndex::e_undecided);
 
 	// initialize which pixels have been changed - starting with none (all false)
-	std::vector<bool> changedPixels;
-	changedPixels.resize(numPixels, false);
+	context.m_changedPixels.resize(context.m_numPixels, false);
+
+	// TODO: temp
+	SavePatterns(context);
 
 	// Do wave collapse
 	EObserveResult observeResult = EObserveResult::e_notDone;
@@ -683,11 +732,11 @@ int main(int argc, char **argv)
 	while (1)
 	{
 		size_t undecidedPixels = 0;
-		observeResult = Observe(outputImageWidth, outputImageHeight, observedColors, changedPixels, superPositionalPixels, patterns, boolsPerPixel, c_tileSize, undecidedPixels, prng);
+		observeResult = Observe(context, undecidedPixels);
 		if (observeResult != EObserveResult::e_notDone)
 			break;
 
-        uint32 percent = 100 - uint32(100.0f * float(undecidedPixels) / (float(outputImageWidth)*float(outputImageHeight)));
+        uint32 percent = 100 - uint32(100.0f * float(undecidedPixels) / float(context.m_numPixels));
         
         if (lastPercent != percent)
         {
@@ -695,11 +744,16 @@ int main(int argc, char **argv)
             lastPercent = percent;
         }
 
-		PropagateAllChanges(outputImageWidth, outputImageHeight, c_tileSize, patterns, changedPixels, superPositionalPixels, boolsPerPixel, outputImageWidth, outputImageHeight);
+		PropagateAllChanges(context);
 	}
 
+	if (observeResult == EObserveResult::e_success)
+		printf("success");
+	else
+		printf("failure!");
+
     // Save the final image
-	SaveFinalImage(c_fileName, outputImageWidth, outputImageHeight, observedColors, palletizedImage);
+	SaveFinalImage(context);
 	return 0;
 }
 
