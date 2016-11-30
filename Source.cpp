@@ -519,35 +519,21 @@ EObserveResult Observe (SContext& context, size_t& undecidedPixels)
 	return EObserveResult::e_notDone;	
 }
 
-bool PatternMatches (const TPattern& patternA, const TPattern& patternB, int patternBOffsetX, int patternBOffsetY, size_t tileSize)
+bool PatternMatches (const TPattern& patternA, const TPattern& patternB, int patternAOffsetX, int patternAOffsetY, int patternBOffsetX, int patternBOffsetY, size_t tileSize)
 {
-	int patternAOffsetX = 0;
-	int patternAOffsetY = 0;
-
-	if (patternBOffsetX < 0)
-	{
-		patternAOffsetX = -patternBOffsetX;
-		patternBOffsetX = 0;
-	}
-
-	if (patternBOffsetY < 0)
-	{
-		patternAOffsetY = -patternBOffsetY;
-		patternBOffsetY = 0;
-	}
-
-	for (int y = 0; y < tileSize; ++y)
+    // TODO: could easily find the min/max x and y to iterate over here
+	for (int y = -(int)tileSize+1; y < tileSize; ++y)
 	{
 		int pay = y + patternAOffsetY;
 		int pby = y + patternBOffsetY;
-		if (pay >= tileSize || pby >= tileSize)
+		if (pay < 0 || pby < 0 || pay >= tileSize || pby >= tileSize)
 			continue;
 
-		for (int x = 0; x < tileSize; ++x)
+		for (int x = -(int)tileSize + 1; x < tileSize; ++x)
 		{
 			int pax = x + patternAOffsetX;
 			int pbx = x + patternBOffsetX;
-			if (pax >= tileSize || pbx >= tileSize)
+			if (pax < 0 || pbx < 0 || pax >= tileSize || pbx >= tileSize)
 				continue;
 
 			if (patternA[pay*tileSize + pax] != patternB[pby*tileSize + pbx])
@@ -598,12 +584,8 @@ void PropagatePatternRestrictions (SContext& context, size_t changedPixelX, size
 
             const TPattern& currentChangedPixelPattern = context.m_patterns[changedPatternIndex].m_pattern;
 
-            // calculate how much to offset the currentChangedPixelPattern to line it up with the currentAffectedPixelPattern
-            int offsetX = patternOffsetX - (int)affectedPatternOffsetPixelX + (int)changedPatternOffsetPixelX;
-            int offsetY = patternOffsetY - (int)affectedPatternOffsetPixelY + (int)changedPatternOffsetPixelY;
-
 			// if we find a matching pattern, we can bail out
-			patternOK = PatternMatches(currentAffectedPixelPattern, currentChangedPixelPattern, offsetX, offsetY, context.m_tileSize);
+			patternOK = PatternMatches(currentAffectedPixelPattern, currentChangedPixelPattern, affectedPatternOffsetPixelX - patternOffsetX, affectedPatternOffsetPixelY - patternOffsetY, changedPatternOffsetPixelX, changedPatternOffsetPixelY, context.m_tileSize);
         }
 
         // if the pattern is ok, nothing else to do!
