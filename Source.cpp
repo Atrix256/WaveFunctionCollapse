@@ -58,8 +58,15 @@ bool operator == (const SPixel& a, const SPixel& b)
 
 enum class EPalletIndex : uint64 { e_undecided = (uint64)-1 };
 
+struct SObservedPixel
+{
+	EPalletIndex	m_observedColor;
+	size_t			m_patternIndex;
+	size_t			m_positionIndex;
+};
+
 typedef std::vector<bool>			TSuperpositionalPixels;
-typedef std::vector<EPalletIndex>	TObservedColors;
+typedef std::vector<SObservedPixel>	TObservedPixels;
 
 struct SPalletizedImageData
 {
@@ -114,7 +121,7 @@ struct SContext
 
 	TSuperpositionalPixels	m_superPositionalPixels;
 
-	TObservedColors			m_observedColors;
+	TObservedPixels			m_observedPixels;
 
 	size_t		m_tileSize;
 	const char* m_fileName;
@@ -457,7 +464,7 @@ EObserveResult Observe (SContext& context, size_t& undecidedPixels)
 		for (size_t x = 0; x < context.m_outputImageWidth; ++x, ++pixelIndex)
 		{
 			// skip pixels which are already decided
-			if (context.m_observedColors[pixelIndex] != EPalletIndex::e_undecided)
+			if (context.m_observedPixels[pixelIndex].m_observedColor != EPalletIndex::e_undecided)
 				continue;
 			++undecidedPixels;
 
@@ -507,7 +514,9 @@ EObserveResult Observe (SContext& context, size_t& undecidedPixels)
 			else
 			{
 				selectedPossibility = (uint64)-1;
-				context.m_observedColors[pixelIndex] = context.m_patterns[patternIndex].m_pattern[positionIndex];
+				context.m_observedPixels[pixelIndex].m_observedColor = context.m_patterns[patternIndex].m_pattern[positionIndex];
+				context.m_observedPixels[pixelIndex].m_patternIndex = patternIndex;
+				context.m_observedPixels[pixelIndex].m_positionIndex = positionIndex;
 			}
 		}
 	}
@@ -585,7 +594,7 @@ void PropagatePatternRestrictions (SContext& context, size_t changedPixelX, size
             const TPattern& currentChangedPixelPattern = context.m_patterns[changedPatternIndex].m_pattern;
 
 			// if we find a matching pattern, we can bail out
-			patternOK = PatternMatches(currentAffectedPixelPattern, currentChangedPixelPattern, affectedPatternOffsetPixelX - patternOffsetX, affectedPatternOffsetPixelY - patternOffsetY, changedPatternOffsetPixelX, changedPatternOffsetPixelY, context.m_tileSize);
+			patternOK = PatternMatches(currentAffectedPixelPattern, currentChangedPixelPattern, (int)affectedPatternOffsetPixelX - patternOffsetX, (int)affectedPatternOffsetPixelY - patternOffsetY, (int)changedPatternOffsetPixelX, (int)changedPatternOffsetPixelY, context.m_tileSize);
         }
 
         // if the pattern is ok, nothing else to do!
@@ -646,14 +655,14 @@ void SaveFinalImage (SContext& context)
 	tempImageData.m_pixels.resize(tempImageData.m_pitch*tempImageData.m_height);
 
 	// set the output image pixels , based on the observed colors
-	const EPalletIndex* srcPixel = &context.m_observedColors[0];
+	const SObservedPixel* srcPixel = &context.m_observedPixels[0];
 	for (size_t y = 0; y < context.m_outputImageHeight; ++y)
 	{
 		SPixel* destPixel = (SPixel*)&tempImageData.m_pixels[y*tempImageData.m_pitch];
 		for (size_t x = 0; x < context.m_outputImageWidth; ++x, ++destPixel, ++srcPixel)
 		{
-			// TODO: handle the srcPixel being undecided.
-			*destPixel = context.m_palletizedImage.m_pallete[(size_t)*srcPixel];
+			// TODO: handle the srcPixel being undecided!
+			*destPixel = context.m_palletizedImage.m_pallete[(size_t)srcPixel->m_observedColor];
 		}
 	}
 
@@ -670,14 +679,14 @@ int main(int argc, char **argv)
 	// TODO: could move all this calculation stuff into a "run" function that takes the params as function params?
 
 	// Parameters
-	SContext context;
+	SContext context(0); // TODO: temp! remove this param so seed goes back to -1
 	context.m_tileSize = 3;
 	context.m_fileName = "Samples\\Knot.bmp";;
 	context.m_periodicInput = true;
 	context.m_periodicOutput = true;
 	context.m_symmetry = 8;
-	context.m_outputImageWidth = 64;
-	context.m_outputImageHeight = 64;
+	context.m_outputImageWidth = 6;
+	context.m_outputImageHeight = 6;
 	context.m_numPixels = context.m_outputImageWidth * context.m_outputImageHeight;
 
     // Load image
@@ -699,13 +708,13 @@ int main(int argc, char **argv)
 	context.m_superPositionalPixels.resize(context.m_numPixels*context.m_boolsPerPixel, true);
 
 	// initialize our observed colors for each pixel, which starts out as undecided
-	context.m_observedColors.resize(context.m_numPixels, EPalletIndex::e_undecided);
+	context.m_observedPixels.resize(context.m_numPixels, { EPalletIndex::e_undecided, (size_t)-1, (size_t)-1 });
 
 	// initialize which pixels have been changed - starting with none (all false)
 	context.m_changedPixels.resize(context.m_numPixels, false);
 
-	// TODO: temp
-	SavePatterns(context);
+	// Uncomment to see the patterns found
+	//SavePatterns(context);
 
 	// Do wave collapse
 	EObserveResult observeResult = EObserveResult::e_notDone;
