@@ -18,6 +18,8 @@ typedef uint64_t uint64;
 //                                                      MISC
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// TODO: could fold the PRNG into context.
+// TODO: we don't need RandomDistribution anymore!
 struct SPRNG
 {
     SPRNG (uint32 seed = -1)
@@ -530,15 +532,18 @@ EObserveResult Observe (SContext& context, size_t& undecidedPixels)
 
 bool PatternMatches (const TPattern& patternA, const TPattern& patternB, int patternAOffsetX, int patternAOffsetY, int patternBOffsetX, int patternBOffsetY, size_t tileSize)
 {
+    int blah = -(int)tileSize + 1;
+    int blah2 = (int)tileSize;
+
     // TODO: could easily find the min/max x and y to iterate over here
-	for (int y = -(int)tileSize+1; y < tileSize; ++y)
+	for (int y = -(int)tileSize+1; y < (int)tileSize; ++y)
 	{
 		int pay = y + patternAOffsetY;
 		int pby = y + patternBOffsetY;
 		if (pay < 0 || pby < 0 || pay >= tileSize || pby >= tileSize)
 			continue;
 
-		for (int x = -(int)tileSize + 1; x < tileSize; ++x)
+		for (int x = -(int)tileSize + 1; x < (int)tileSize; ++x)
 		{
 			int pax = x + patternAOffsetX;
 			int pbx = x + patternBOffsetX;
@@ -594,7 +599,7 @@ void PropagatePatternRestrictions (SContext& context, size_t changedPixelX, size
             const TPattern& currentChangedPixelPattern = context.m_patterns[changedPatternIndex].m_pattern;
 
 			// if we find a matching pattern, we can bail out
-			patternOK = PatternMatches(currentAffectedPixelPattern, currentChangedPixelPattern, (int)affectedPatternOffsetPixelX - patternOffsetX, (int)affectedPatternOffsetPixelY - patternOffsetY, (int)changedPatternOffsetPixelX, (int)changedPatternOffsetPixelY, context.m_tileSize);
+			patternOK = PatternMatches(currentAffectedPixelPattern, currentChangedPixelPattern, (int)affectedPatternOffsetPixelX, (int)affectedPatternOffsetPixelY, (int)changedPatternOffsetPixelX + patternOffsetX, (int)changedPatternOffsetPixelY + patternOffsetY, context.m_tileSize);
         }
 
         // if the pattern is ok, nothing else to do!
@@ -751,6 +756,8 @@ int main(int argc, char **argv)
 /*
 
 TODO:
+
+! need to simplify patterns and trace through small image to see what happens.  Maybe make it print out debug info?
 
 * profile and see where the slow downs are, in case any easy fixes that don't complicate things.
 
