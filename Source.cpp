@@ -493,7 +493,7 @@ EObserveResult Observe (SContext& context, size_t& undecidedPixels)
 
 	// otherwise, select a possibility for this pixel
 	// TODO: make this a function.  ObservePixel()
-	uint64 selectedPossibility = context.m_prng.RandomInt<uint64>(0, minPossibilities);
+	uint64 selectedPossibility = context.m_prng.RandomInt<uint64>(0, minPossibilities-1);
 	size_t patternPositionOffset = 0;
 	const size_t tileSizeSq = context.m_tileSize * context.m_tileSize;
 	pixelIndex = minPixelY * context.m_outputImageWidth + minPixelX;
@@ -679,10 +679,12 @@ void SaveFinalImage (SContext& context)
 }
 
 
+
 int main(int argc, char **argv)
 {
 	// TODO: could move all this calculation stuff into a "run" function that takes the params as function params?
 
+	/*
 	// Parameters
 	SContext context(0); // TODO: temp! remove this param so seed goes back to -1
 	context.m_tileSize = 3;
@@ -693,18 +695,43 @@ int main(int argc, char **argv)
 	context.m_outputImageWidth = 6;
 	context.m_outputImageHeight = 6;
 	context.m_numPixels = context.m_outputImageWidth * context.m_outputImageHeight;
+	*/
+
+	SContext context(0); // TODO: temp! remove this param so seed goes back to -1
+	context.m_tileSize = 2;
+	context.m_fileName = "Samples\\Knot.bmp";;
+	context.m_periodicInput = true;
+	context.m_periodicOutput = true;
+	context.m_symmetry = 8;
+	context.m_outputImageWidth = 3;
+	context.m_outputImageHeight = 3;
+	context.m_numPixels = context.m_outputImageWidth * context.m_outputImageHeight;
 
     // Load image
-    if (!LoadImage(context.m_fileName, context.m_colorImage)) {
-        fprintf(stderr, "Could not load image: %s\n", context.m_fileName);
-        return 1;
-    }
+	if (!LoadImage(context.m_fileName, context.m_colorImage)) {
+		fprintf(stderr, "Could not load image: %s\n", context.m_fileName);
+		return 1;
+	}
 
     // Palletize the image for simpler processing of pixels
     PalletizeImage(context.m_colorImage, context.m_palletizedImage);
 
     // Gather the patterns from the source data
     GetPatterns(context);
+
+	// TODO: temp!
+	{
+		context.m_patterns.clear();
+		context.m_patterns.resize(2);
+
+		context.m_patterns[0].m_count = 1;
+		context.m_patterns[0].m_pattern.resize(4);
+		context.m_patterns[0].m_pattern = {(EPalletIndex)1,(EPalletIndex)0,(EPalletIndex)1,(EPalletIndex)0};
+
+		context.m_patterns[1].m_count = 1;
+		context.m_patterns[1].m_pattern.resize(4);
+		context.m_patterns[1].m_pattern = { (EPalletIndex)1,(EPalletIndex)1,(EPalletIndex)0,(EPalletIndex)0 };
+	}
 
 	context.m_boolsPerPixel = context.m_patterns.size() * context.m_tileSize * context.m_tileSize;
 
@@ -757,7 +784,12 @@ int main(int argc, char **argv)
 
 TODO:
 
+! could try adding support for periodic output and turn it off to simplify things more?
+
 ! need to simplify patterns and trace through small image to see what happens.  Maybe make it print out debug info?
+
+* make it write output to a special folder.
+ ? maybe source is assumed to be in "samples" folder, and then output goes to an output folder?
 
 * profile and see where the slow downs are, in case any easy fixes that don't complicate things.
 
