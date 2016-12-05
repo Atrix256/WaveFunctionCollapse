@@ -14,6 +14,16 @@ typedef uint8_t uint8;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
 
+#define TRACE_LEVEL() 1
+
+#if TRACE_LEVEL() > 0
+	#define TRACE printf
+	#define NTRACE
+#else
+	#define TRACE
+	#define NTRACE printf
+#endif
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                                      MISC
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -134,6 +144,8 @@ struct SContext
 	size_t		m_outputImageHeight;
 	size_t		m_numPixels;
 	size_t		m_boolsPerPixel;
+
+	std::vector<std::vector<size_t>>	m_propagator;
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -475,7 +487,10 @@ EObserveResult Observe (SContext& context, size_t& undecidedPixels)
 
 			// if no possibilities, this is an impossible pixel
 			if (possibilities == 0)
-                return EObserveResult::e_failure;
+			{
+				TRACE(__FUNCTION__ "(): found impossible pixel: (%zu, %zu)\n", x, y);
+				return EObserveResult::e_failure;
+			}
 
 			// otherwise, remember the minimum one we found
             if (possibilities < minPossibilities)
@@ -488,8 +503,11 @@ EObserveResult Observe (SContext& context, size_t& undecidedPixels)
 	}
 
     // if all pixels are decided (no entropy left in the image), return success
-    if (minPossibilities == (uint64)-1)
-        return EObserveResult::e_success;
+	if (minPossibilities == (uint64)-1)
+	{
+		return EObserveResult::e_success;
+		TRACE(__FUNCTION__ "(): all pixels decided, finished!\n");
+	}
 
 	// otherwise, select a possibility for this pixel
 	// TODO: make this a function.  ObservePixel()
@@ -515,6 +533,7 @@ EObserveResult Observe (SContext& context, size_t& undecidedPixels)
 			// else it IS the selected pattern, leave it as possible, and set the observed color
 			else
 			{
+				TRACE(__FUNCTION__ "(): pixel %zu,%zu decided on pattern %zu, offset %zu\n", minPixelX, minPixelY, patternIndex, positionIndex);
 				selectedPossibility = (uint64)-1;
 				context.m_observedPixels[pixelIndex].m_observedColor = context.m_patterns[patternIndex].m_pattern[positionIndex];
 				context.m_observedPixels[pixelIndex].m_patternIndex = patternIndex;
@@ -559,6 +578,8 @@ bool PatternMatches (const TPattern& patternA, const TPattern& patternB, int pat
 
 void PropagatePatternRestrictions (SContext& context, size_t changedPixelX, size_t changedPixelY, size_t affectedPixelX, size_t affectedPixelY, int patternOffsetX, int patternOffsetY)
 {
+	TRACE("  affecting %zu,%zu\n", affectedPixelX, affectedPixelY);
+
     // If any possible pattern in the affectedPixel doesn't match a possible pattern in changedPixel, mark it as impossible.
     // Note that we need to take into account the offset between the pixels, and only care about locations that are inside both patterns.
     size_t changedPixelIndex = changedPixelY * context.m_outputImageWidth + changedPixelX;
@@ -593,23 +614,53 @@ void PropagatePatternRestrictions (SContext& context, size_t changedPixelX, size
             size_t changedPatternIndex = changedPixelOffset / positionCount;
             size_t changedPatternOffsetPixelIndex = changedPixelOffset % positionCount;
 
-            size_t changedPatternOffsetPixelX = changedPatternOffsetPixelIndex % context.m_tileSize;
-            size_t changedPatternOffsetPixelY = changedPatternOffsetPixelIndex / context.m_tileSize;
+            int changedPatternOffsetPixelX = (int)(changedPatternOffsetPixelIndex % context.m_tileSize) + patternOffsetX;
+            int changedPatternOffsetPixelY = (int)(changedPatternOffsetPixelIndex / context.m_tileSize) + patternOffsetY;
 
             const TPattern& currentChangedPixelPattern = context.m_patterns[changedPatternIndex].m_pattern;
 
 			// if we find a matching pattern, we can bail out
-			patternOK = PatternMatches(currentAffectedPixelPattern, currentChangedPixelPattern, (int)affectedPatternOffsetPixelX, (int)affectedPatternOffsetPixelY, (int)changedPatternOffsetPixelX + patternOffsetX, (int)changedPatternOffsetPixelY + patternOffsetY, context.m_tileSize);
+			patternOK = PatternMatches(currentAffectedPixelPattern, currentChangedPixelPattern, (int)affectedPatternOffsetPixelX, (int)affectedPatternOffsetPixelY, changedPatternOffsetPixelX, changedPatternOffsetPixelY, context.m_tileSize);
         }
+
+		bool patternOKPropagator = false;
+		const int numPatterns = (int)context.m_patterns.size();
+		const int dims = (int)context.m_tileSize * 2 - 1;
+		int px = (int)context.m_tileSize - 1 - patternOffsetX;
+		int py = (int)context.m_tileSize - 1 - patternOffsetY;
+
+		// TODO: continue getting propagator working
+
+		//std::vector<size_t>& list = context.m_propagator[(px*dims + px)*numPatterns + t];
+
+		if (patternOK != patternOKPropagator)
+		{
+			int ijkl = 0;
+		}
 
         // if the pattern is ok, nothing else to do!
         if (patternOK)
             continue;
 
+		TRACE("    disabling pattern %zu, offset %zu\n", affectedPatternIndex, affectedPatternOffsetPixelIndex);
+
         // otherwise, disable this pattern and remember that we've changed this affectedPixel
 		context.m_superPositionalPixels[affectedPixelBoolIndex + affectedPixelOffset] = patternOK;
 		context.m_changedPixels[affectedPixelIndex] = true;
     }
+
+	#if TRACE_LEVEL() > 0
+	{
+		size_t possibilitiesRemaining = 0;
+		for (size_t affectedPixelOffset = 0; affectedPixelOffset < context.m_boolsPerPixel; ++affectedPixelOffset)
+		{
+			if (context.m_superPositionalPixels[affectedPixelBoolIndex + affectedPixelOffset])
+				++possibilitiesRemaining;
+		}
+
+		TRACE("  %zu possibilities remaining\n", possibilitiesRemaining);
+	}
+	#endif
 }
 
 bool Propagate (SContext& context)
@@ -625,10 +676,15 @@ bool Propagate (SContext& context)
 	// Process all pixels that could be affected by a change to this pixel
 	size_t changedPixelX = i % context.m_outputImageWidth;
 	size_t changedPixelY = i / context.m_outputImageWidth;
+	TRACE("propagating changes for pixel %zu,%zu\n", changedPixelX, changedPixelY);
 	for (int indexY = -(int)context.m_tileSize + 1, stopY = (int)context.m_tileSize; indexY < stopY; ++indexY)
 	{
 		for (int indexX = -(int)context.m_tileSize + 1, stopX = (int)context.m_tileSize; indexX < stopX; ++indexX)
 		{
+			// no need to process the same pixel
+			if (indexX == 0 && indexY == 0)
+				continue;
+
 			size_t affectedPixelX = (changedPixelX + indexX + context.m_outputImageWidth) % context.m_outputImageWidth;
 			size_t affectedPixelY = (changedPixelY + indexY + context.m_outputImageHeight) % context.m_outputImageHeight;
             PropagatePatternRestrictions(context, changedPixelX, changedPixelY, affectedPixelX, affectedPixelY, indexX, indexY);
@@ -735,6 +791,52 @@ int main(int argc, char **argv)
 
 	context.m_boolsPerPixel = context.m_patterns.size() * context.m_tileSize * context.m_tileSize;
 
+	// generate propagator
+	// TODO: move this into a function
+	int numPatterns = (int)context.m_patterns.size();
+	auto agrees = [numPatterns] (const TPattern& A, const TPattern& B, int dx, int dy)
+	{
+		// TODO; re-write when working?
+		const int N = numPatterns;
+
+		int xmin = dx < 0 ? 0 : dx;
+		int xmax = dx < 0 ? dx + N : N;
+		int ymin = dy < 0 ? 0 : dy;
+		int ymax = dy < 0 ? dy + N : N;
+		for (int y = ymin; y < ymax; y++)
+		{
+			for (int x = xmin; x < xmax; x++)
+			{
+				if (A[x + N * y] != B[x - dx + N * (y - dy)])
+					return false;
+			}
+		}
+		return true;
+	};
+
+	int dims = (int)context.m_tileSize * 2 - 1;
+	context.m_propagator.resize(dims*dims*numPatterns);
+	for (int y = 0; y < dims; ++y)
+	{
+		for (int x = 0; x < dims; ++x)
+		{
+			for (int t = 0; t < numPatterns; ++t)
+			{
+				if (x == dims - 1 && y == dims - 1 && t == numPatterns - 1)
+				{
+					int ijkl = 0;
+				}
+				std::vector<size_t>& list = context.m_propagator[(y*dims+x)*numPatterns + t];
+
+				for (int t2 = 0; t2 < numPatterns; t2++)
+				{
+					if (agrees(context.m_patterns[t].m_pattern, context.m_patterns[t2].m_pattern, x - numPatterns + 1, y - numPatterns + 1))
+						list.push_back(t2);
+				}
+			}
+		}
+	}
+
 	// initialize our superpositional pixel information which describes which patterns in what positions each pixel has as a possibility
 	// TODO: make this stuff happen in the context constructor
 	context.m_superPositionalPixels.resize(context.m_numPixels*context.m_boolsPerPixel, true);
@@ -751,7 +853,7 @@ int main(int argc, char **argv)
 	// Do wave collapse
 	EObserveResult observeResult = EObserveResult::e_notDone;
     uint32 lastPercent = 0;
-    printf("Progress: 0%%");
+    NTRACE("Progress: 0%%");
 	while (1)
 	{
 		size_t undecidedPixels = 0;
@@ -763,7 +865,7 @@ int main(int argc, char **argv)
         
         if (lastPercent != percent)
         {
-            printf("\rProgress: %i%%", percent);
+            NTRACE("\rProgress: %i%%", percent);
             lastPercent = percent;
         }
 
@@ -771,9 +873,9 @@ int main(int argc, char **argv)
 	}
 
 	if (observeResult == EObserveResult::e_success)
-		printf("success");
+		NTRACE("success");
 	else
-		printf("failure!");
+		NTRACE("failure!");
 
     // Save the final image
 	SaveFinalImage(context);
@@ -783,6 +885,12 @@ int main(int argc, char **argv)
 /*
 
 TODO:
+
+* make propagator.  Use propagator.  See if propagator works.  Find any time where your code and propagator disagree.
+
+* get rid of trace calls once it's working
+
+! print out the things you were writing out by hand, to be able to debug more quickly and get a better idea of what's going on.
 
 ! could try adding support for periodic output and turn it off to simplify things more?
 
